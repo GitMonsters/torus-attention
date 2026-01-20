@@ -52,7 +52,10 @@ pub mod training;
 
 // LLM and API server
 pub mod api_server;
+pub mod checkpoint;
+pub mod dataset;
 pub mod llm;
+pub mod llm_trainer;
 pub mod tokenizer;
 
 // Integration tests
@@ -95,9 +98,12 @@ pub use training::{
 
 // LLM exports
 pub use api_server::{ApiHandler, ServerConfig};
+pub use checkpoint::{load_checkpoint, save_checkpoint, CheckpointMetadata};
+pub use dataset::{Batch, DataLoader, TextDataset};
 pub use llm::{
     FeedForward, SamplingStrategy, TextGenerator, TorusLLM, TorusLLMConfig, TransformerBlock,
 };
+pub use llm_trainer::{LLMTrainer, LLMTrainingConfig};
 pub use tokenizer::{format_chat_prompt, ChatMessage, SimpleTokenizer, SpecialTokens};
 
 /// Result type for torus operations

@@ -14,6 +14,10 @@ crate-type = ["cdylib", "rlib"]
 name = "torus_demo"
 path = "src/main.rs"
 
+[[bin]]
+name = "torus_server"
+path = "src/bin/torus_server.rs"
+
 [dependencies]
 # Core ML - Hugging Face's Rust ML framework
 candle-core = "0.8"

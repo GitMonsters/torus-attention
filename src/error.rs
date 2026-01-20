@@ -21,4 +21,10 @@ pub enum TorusError {
 
     #[error("Computation error: {0}")]
     ComputationError(String),
+
+    #[error("Dimension error: {0}")]
+    Dimension(String),
+
+    #[error("IO error: {0}")]
+    Io(String),
 }

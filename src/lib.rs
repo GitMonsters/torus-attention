@@ -50,6 +50,11 @@ pub mod parallel_streams;
 // Training infrastructure
 pub mod training;
 
+// LLM and API server
+pub mod api_server;
+pub mod llm;
+pub mod tokenizer;
+
 // Integration tests
 #[cfg(test)]
 mod tests;
@@ -87,6 +92,13 @@ pub use training::{
     run_training_example, LRScheduler, LossType, TorusLoss, Trainer, TrainingConfig,
     TrainingMetrics,
 };
+
+// LLM exports
+pub use api_server::{ApiHandler, ServerConfig};
+pub use llm::{
+    FeedForward, SamplingStrategy, TextGenerator, TorusLLM, TorusLLMConfig, TransformerBlock,
+};
+pub use tokenizer::{format_chat_prompt, ChatMessage, SimpleTokenizer, SpecialTokens};
 
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;

@@ -1,0 +1,21 @@
+{
+  "config": {
+    "vocab_size": 50257,
+    "max_seq_len": 512,
+    "hidden_dim": 128,
+    "num_layers": 2,
+    "num_heads": 4,
+    "ffn_dim": 512,
+    "dropout": 0.1,
+    "layer_norm_eps": 0.00001,
+    "tie_embeddings": true,
+    "torus_major_radius": 2.0,
+    "torus_minor_radius": 1.0,
+    "ema_alpha": 0.9,
+    "use_coherence": true
+  },
+  "step": 10,
+  "loss": null,
+  "timestamp": "1768893145",
+  "version": "0.1.0"
+}

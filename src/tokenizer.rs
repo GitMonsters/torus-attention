@@ -116,7 +116,8 @@ pub struct BpeTokenizer {
     special_tokens: SpecialTokens,
     /// Vocabulary size
     vocab_size: usize,
-    /// Set of multi-char tokens for quick lookup
+    /// Set of multi-char tokens for quick lookup (reserved for future BPE merges)
+    #[allow(dead_code)]
     multi_char_tokens: HashSet<String>,
 }
 

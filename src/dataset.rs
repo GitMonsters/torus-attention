@@ -30,7 +30,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::TorusError;
-use crate::tokenizer::{BpeTokenizer, SimpleTokenizer, Tokenizer};
+use crate::tokenizer::Tokenizer;
 use crate::TorusResult;
 
 /// A single training example
@@ -357,6 +357,7 @@ impl Iterator for DataLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokenizer::{BpeTokenizer, SimpleTokenizer};
 
     #[test]
     fn test_synthetic_dataset() {

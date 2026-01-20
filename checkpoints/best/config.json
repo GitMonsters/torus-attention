@@ -14,8 +14,8 @@
     "ema_alpha": 0.9,
     "use_coherence": true
   },
-  "step": 175,
-  "loss": 33.62616729736328,
-  "timestamp": "1768894270",
+  "step": 300,
+  "loss": 31.473073959350586,
+  "timestamp": "1768910986",
   "version": "0.1.0"
 }

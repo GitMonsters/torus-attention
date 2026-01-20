@@ -170,6 +170,10 @@ struct Args {
     #[arg(long)]
     cuda: bool,
 
+    /// Use Metal (Apple Silicon) if available
+    #[arg(long)]
+    metal: bool,
+
     /// Enable Tensorboard logging
     #[arg(long)]
     tensorboard: bool,
@@ -207,6 +211,8 @@ fn main() -> anyhow::Result<()> {
     // Select device
     let device = if args.cuda {
         Device::cuda_if_available(0)?
+    } else if args.metal {
+        Device::new_metal(0)?
     } else {
         Device::Cpu
     };

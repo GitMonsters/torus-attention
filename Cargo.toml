@@ -22,6 +22,10 @@ path = "src/bin/torus_server.rs"
 name = "torus_train"
 path = "src/bin/torus_train.rs"
 
+[[bin]]
+name = "torus_dynamic_train"
+path = "src/bin/torus_dynamic_train.rs"
+
 [dependencies]
 # Core ML - Hugging Face's Rust ML framework
 candle-core = "0.8"
@@ -59,6 +63,10 @@ safetensors = "0.4"
 
 # Random number generation
 rand = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
 
 [features]
 default = []

@@ -54,6 +54,7 @@ pub mod training;
 pub mod api_server;
 pub mod checkpoint;
 pub mod dataset;
+pub mod dynamic_trainer;
 pub mod llm;
 pub mod llm_trainer;
 pub mod tokenizer;
@@ -105,6 +106,13 @@ pub use llm::{
 };
 pub use llm_trainer::{LLMTrainer, LLMTrainingConfig};
 pub use tokenizer::{format_chat_prompt, ChatMessage, SimpleTokenizer, SpecialTokens};
+
+// Dynamic training exports
+pub use dynamic_trainer::{
+    CurriculumSamplingParams, CurriculumScheduler, DifficultyLevel, DynamicBatchController,
+    DynamicCompoundTrainer, DynamicEMAController, DynamicTrainingConfig, DynamicTrainingStats,
+    GrowthConfig, GrowthController, LayerWiseLRController, MultiTaskScheduler, Task,
+};
 
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;

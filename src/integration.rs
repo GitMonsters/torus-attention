@@ -5,15 +5,15 @@
 //!
 //! Input → 8-Stream Parallel → Symmetric Combine → Coherence-Modulated EMA → Output
 //!
-//! Features:
-//! - 8 parallel processing streams (major/minor forward/backward, spiral CW/CCW, cross U↔V)
-//! - Symmetric bidirectional combination with learned weights
-//! - Multi-layer EMA compounding with learnable α per layer
-//! - **Cognitive coherence integration** (SOC + SMM for adaptive compounding)
-//! - Torus-aware position encodings and geodesic biases
-//! - Full integration with the original torus attention system
+//! # Features
 //!
-//! ## Cognitive Coherence Integration
+//! - **8 parallel processing streams**: Major/minor forward/backward, spiral CW/CCW, cross U↔V
+//! - **Symmetric bidirectional combination**: Learned weights for stream mixing
+//! - **Multi-layer EMA compounding**: Learnable α per layer with momentum
+//! - **Cognitive coherence integration**: SOC + SMM for adaptive compounding
+//! - **Torus-aware position encodings**: Geodesic biases and periodic boundaries
+//!
+//! # Cognitive Coherence Integration
 //!
 //! The coherence module bridges cognitive cohesion (inter-stream alignment)
 //! with psychological coherence (state stability):
@@ -22,6 +22,38 @@
 //! 8 Streams → SMM (alignment) → Coherence-weighted fusion
 //!                   ↓
 //!           SOC (stability) → Adaptive α for EMA
+//! ```
+//!
+//! When coherence is enabled:
+//! - Attention patterns are analyzed for comprehensibility, manageability, meaningfulness
+//! - Stream alignment is tracked via Shared Mental Models
+//! - EMA compounding alpha is dynamically adjusted based on coherence state
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use torus_attention::{BidirectionalTorusConfig, BidirectionalTorusTransformer};
+//! use candle_core::{Device, DType, Tensor};
+//! use candle_nn::VarMap;
+//!
+//! let device = Device::Cpu;
+//! let mut config = BidirectionalTorusConfig::default();
+//! config.use_coherence = true;
+//!
+//! let varmap = VarMap::new();
+//! let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
+//!
+//! let mut transformer = BidirectionalTorusTransformer::new(
+//!     config.clone(), None, vb, &device
+//! ).unwrap();
+//!
+//! let input = Tensor::randn(0.0f32, 1.0, (1, config.seq_len(), config.d_model), &device).unwrap();
+//! let output = transformer.forward(&input).unwrap();
+//!
+//! // Check coherence state
+//! if let Some(coherent) = transformer.is_coherent() {
+//!     println!("System coherent: {}", coherent);
+//! }
 //! ```
 
 use crate::attention::{Activation, TorusFeedForward};
@@ -35,7 +67,37 @@ use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the unified bidirectional system
+/// Configuration for the unified bidirectional torus transformer.
+///
+/// This configuration controls all aspects of the transformer architecture including:
+/// - Model dimensions and layer counts
+/// - Torus geometry parameters (radii, grid sizes)
+/// - Processing options (parallel streams, compounding, coherence)
+/// - Numerical hyperparameters (dropout, temperatures, learning rates)
+///
+/// # Coherence Configuration
+///
+/// When `use_coherence` is enabled, the transformer tracks:
+/// - **Sense of Coherence (SOC)**: Comprehensibility, manageability, meaningfulness
+/// - **Shared Mental Models (SMM)**: Inter-stream alignment
+/// - **Adaptive Alpha**: EMA compounding rate adjusted by coherence state
+///
+/// # Example
+///
+/// ```rust
+/// use torus_attention::BidirectionalTorusConfig;
+///
+/// // Default configuration with coherence enabled
+/// let config = BidirectionalTorusConfig::default();
+/// assert!(config.use_coherence);
+///
+/// // Custom configuration
+/// let mut config = BidirectionalTorusConfig::default();
+/// config.d_model = 512;
+/// config.n_layers = 12;
+/// config.use_coherence = true;
+/// config.coherence_threshold = 0.7;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BidirectionalTorusConfig {
     /// Model dimension
@@ -172,7 +234,18 @@ impl BidirectionalTorusConfig {
     }
 }
 
-/// Single layer of the bidirectional torus transformer
+/// Single layer of the bidirectional torus transformer.
+///
+/// Each layer performs:
+/// 1. Pre-normalization
+/// 2. 8-stream parallel attention (major/minor forward/backward, spiral CW/CCW, cross U↔V)
+/// 3. Residual connection
+/// 4. Post-attention normalization
+/// 5. Feed-forward network with GELU activation
+/// 6. Final residual connection
+///
+/// When coherence tracking is enabled at the transformer level, the layer
+/// returns both the output tensor and an attention proxy for coherence updates.
 #[derive(Debug)]
 pub struct BidirectionalTorusLayer {
     /// 8-stream parallel processor
@@ -191,11 +264,23 @@ pub struct BidirectionalTorusLayer {
     config: BidirectionalTorusConfig,
 }
 
-/// Output from a layer forward pass, including optional attention for coherence
+/// Output from a layer forward pass, including optional attention for coherence.
+///
+/// This struct enables coherence tracking by providing:
+/// - The main output tensor for downstream processing
+/// - An optional attention pattern proxy for SOC metric computation
+///
+/// # Attention Proxy
+///
+/// The attention proxy is computed as a softmax of element-wise products
+/// between the normalized input and attention output. This serves as a
+/// "how much does the output attend to the input" signal that the
+/// coherence module uses to compute comprehensibility and meaningfulness.
 pub struct LayerOutput {
-    /// The main output tensor
+    /// The main output tensor from the layer
     pub output: Tensor,
     /// Combined attention pattern (for coherence updates)
+    /// This is a flattened, normalized attention proxy
     pub attention: Option<Tensor>,
 }
 
@@ -277,7 +362,74 @@ impl BidirectionalTorusLayer {
     }
 }
 
-/// Complete bidirectional torus transformer with compounding and coherence
+/// Complete bidirectional torus transformer with compounding and coherence.
+///
+/// This is the main entry point for the torus attention architecture. It combines:
+///
+/// - **Position Encoding**: Bidirectional torus-aware encodings for the 2D manifold
+/// - **8-Stream Parallel Processing**: Multiple information flow patterns
+/// - **EMA Compounding**: Accumulating information across layers
+/// - **Cognitive Coherence**: Adaptive compounding based on attention stability
+///
+/// # Architecture
+///
+/// ```text
+/// Input
+///   │
+///   ▼
+/// Embedding (optional, for vocab input)
+///   │
+///   ▼
+/// + Position Encodings (torus bidirectional)
+///   │
+///   ▼
+/// ┌─────────────────────────────────────────┐
+/// │ For each layer:                         │
+/// │   ├─ Pre-Norm                           │
+/// │   ├─ 8-Stream Parallel Attention        │
+/// │   ├─ Residual                           │
+/// │   ├─ Post-Norm                          │
+/// │   ├─ Feed-Forward (GELU)                │
+/// │   ├─ Residual                           │
+/// │   └─ Coherence-Modulated EMA Compound   │
+/// └─────────────────────────────────────────┘
+///   │
+///   ▼
+/// Final LayerNorm
+///   │
+///   ▼
+/// Output Projection
+/// ```
+///
+/// # Coherence Integration
+///
+/// When `config.use_coherence` is true:
+/// 1. Each layer's attention proxy is fed to the coherence module
+/// 2. SOC metrics (comprehensibility, manageability, meaningfulness) are updated
+/// 3. An adaptive alpha is computed based on coherence state
+/// 4. EMA compounding uses this adaptive alpha instead of learned alpha
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use torus_attention::{BidirectionalTorusConfig, BidirectionalTorusTransformer};
+///
+/// let device = Device::Cpu;
+/// let config = BidirectionalTorusConfig::default();
+/// let varmap = VarMap::new();
+/// let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
+///
+/// let mut transformer = BidirectionalTorusTransformer::new(
+///     config.clone(), None, vb, &device
+/// )?;
+///
+/// // Forward pass
+/// let output = transformer.forward(&input)?;
+///
+/// // Check coherence metrics
+/// println!("SOC: {:.3}", transformer.coherence_score().unwrap_or(0.0));
+/// println!("Cohesion: {:.3}", transformer.cohesion_score().unwrap_or(0.0));
+/// ```
 #[derive(Debug)]
 pub struct BidirectionalTorusTransformer {
     /// Input embedding (if needed)
@@ -594,37 +746,69 @@ impl BidirectionalTorusInference {
     }
 }
 
-/// Statistics and diagnostics for the bidirectional system
+/// Statistics and diagnostics for the bidirectional transformer.
+///
+/// Collects comprehensive metrics from a transformer instance including:
+/// - Stream weights for all layers
+/// - Compounding alpha values
+/// - Multi-scale weights (if enabled)
+/// - Coherence metrics (if enabled)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let stats = BidirectionalStats::from_transformer(&transformer)?;
+/// stats.summary(); // Prints formatted statistics
+///
+/// if let Some(coh) = stats.coherence_metrics {
+///     println!("SOC: {:.3}, Coherent: {}", coh.soc_score, coh.is_coherent);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct BidirectionalStats {
-    /// Stream weights per layer
+    /// Stream weights per layer (8 streams per layer)
     pub stream_weights: Vec<Vec<(StreamId, f32)>>,
     /// Compounding alphas per layer
     pub compounding_alphas: Vec<f64>,
-    /// Multi-scale weights (if applicable)
+    /// Multi-scale weights (fast/medium/slow) if multi-scale compounding is enabled
     pub scale_weights: Option<Vec<f32>>,
-    /// Coherence metrics (if coherence enabled)
+    /// Coherence metrics (if coherence is enabled)
     pub coherence_metrics: Option<CoherenceMetrics>,
 }
 
-/// Coherence-specific metrics extracted from the transformer
+/// Coherence-specific metrics extracted from the transformer.
+///
+/// Provides a snapshot of the cognitive coherence state including:
+/// - SOC (Sense of Coherence) components and overall score
+/// - Cognitive cohesion (inter-stream alignment)
+/// - Current adaptive alpha being used for compounding
+/// - Trend analysis for monitoring coherence over time
+///
+/// # Interpretation
+///
+/// - **soc_score > 0.6**: System is in a coherent state (threshold configurable)
+/// - **cognitive_cohesion > 0.7**: Streams are well-aligned
+/// - **coherence_trend > 0**: Coherence is improving over time
 #[derive(Debug, Clone)]
 pub struct CoherenceMetrics {
-    /// Sense of coherence score (0-1)
+    /// Sense of coherence score (0-1), weighted combination of components
     pub soc_score: f64,
-    /// Comprehensibility component
+    /// Comprehensibility: perceived clarity of attention patterns (0-1)
+    /// High = sharp, consistent attention; Low = high entropy, scattered
     pub comprehensibility: f64,
-    /// Manageability component
+    /// Manageability: capacity vs demand balance (0-1)
+    /// High = within capacity; Low = overwhelmed
     pub manageability: f64,
-    /// Meaningfulness component
+    /// Meaningfulness: signal concentration/importance (0-1)
+    /// High = strong signal-to-noise; Low = noise-dominated
     pub meaningfulness: f64,
-    /// Cognitive cohesion (inter-stream alignment)
+    /// Cognitive cohesion: average inter-stream alignment (0-1)
     pub cognitive_cohesion: f64,
-    /// Current adaptive alpha
+    /// Current adaptive alpha being used for EMA compounding
     pub adaptive_alpha: f64,
-    /// Coherence trend (positive = improving)
+    /// Coherence trend: positive = improving, negative = degrading
     pub coherence_trend: f64,
-    /// Whether system is in coherent state
+    /// Whether system is currently in coherent state
     pub is_coherent: bool,
 }
 

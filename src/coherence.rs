@@ -5,12 +5,14 @@
 //!
 //! # Theoretical Foundation
 //!
-//! **Cognitive Cohesion**: Shared understanding among processing streams regarding
-//! goals (attention targets), roles (stream specialization), and processes
-//! (information flow patterns). Operationalized through Shared Mental Models (SMMs).
+//! ## Cognitive Cohesion
+//! Shared understanding among processing streams regarding goals (attention targets),
+//! roles (stream specialization), and processes (information flow patterns).
+//! Operationalized through Shared Mental Models (SMMs).
 //!
-//! **Psychological Coherence (SOC)**: The internal consistency that allows the
-//! system to perceive inputs as:
+//! ## Psychological Coherence (SOC)
+//! Based on Antonovsky's Salutogenic model, SOC represents the internal consistency
+//! that allows the system to perceive inputs as:
 //! - **Comprehensible**: Predictable, structured, clear
 //! - **Manageable**: Within capacity to process
 //! - **Meaningful**: Worth attending to, significant
@@ -29,6 +31,38 @@
 //!   - Strengthen belief           individual streams         - Manageability  
 //!   - Reinforce purpose          - Enable anticipation       - Meaningfulness
 //! ```
+//!
+//! # Usage
+//!
+//! The coherence module can be used standalone or integrated into the
+//! `BidirectionalTorusTransformer`:
+//!
+//! ```rust
+//! use torus_attention::{SenseOfCoherence, SharedMentalModel, CognitiveCoherenceLayer};
+//! use candle_core::Device;
+//!
+//! // Standalone SOC
+//! let soc = SenseOfCoherence::healthy();
+//! println!("Score: {:.3}", soc.score());
+//! println!("Adaptive alpha: {:.3}", soc.adaptive_alpha(0.9, 0.1, 0.99));
+//!
+//! // Standalone SMM
+//! let smm = SharedMentalModel::for_torus_attention();
+//! println!("Cohesion: {:.3}", smm.cognitive_cohesion());
+//!
+//! // Full coherence layer
+//! let device = Device::Cpu;
+//! let coherence = CognitiveCoherenceLayer::for_torus_attention(256, &device);
+//! println!("{}", coherence.summary());
+//! ```
+//!
+//! # Integration with Transformer
+//!
+//! When integrated into `BidirectionalTorusTransformer`:
+//! 1. Each forward pass updates SOC based on attention entropy and concentration
+//! 2. The SMM alignment matrix is updated from stream attention patterns
+//! 3. An adaptive alpha is computed: `α = base * (0.5 + 0.5 * (0.6*SOC + 0.4*cohesion*SOC))`
+//! 4. This alpha replaces the learned alpha in EMA compounding
 
 use crate::TorusResult;
 use candle_core::{Device, Tensor};

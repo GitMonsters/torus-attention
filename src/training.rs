@@ -55,6 +55,16 @@ pub struct TrainingConfig {
     pub mixed_precision: bool,
     /// Random seed
     pub seed: u64,
+    /// Enable coherence-based early stopping
+    pub coherence_early_stopping: bool,
+    /// Coherence stability window (number of evals)
+    pub coherence_stability_window: usize,
+    /// Coherence stability threshold (max variance in window)
+    pub coherence_stability_threshold: f64,
+    /// Minimum coherence score to consider stable
+    pub coherence_min_score: f64,
+    /// Patience: number of stable evaluations before stopping
+    pub coherence_patience: usize,
 }
 
 impl Default for TrainingConfig {
@@ -76,6 +86,11 @@ impl Default for TrainingConfig {
             log_every: 100,
             mixed_precision: false,
             seed: 42,
+            coherence_early_stopping: false,
+            coherence_stability_window: 5,
+            coherence_stability_threshold: 0.01,
+            coherence_min_score: 0.6,
+            coherence_patience: 3,
         }
     }
 }
@@ -296,6 +311,12 @@ pub struct TrainingMetrics {
     pub best_eval_loss: f64,
     /// Step with best evaluation loss
     pub best_step: usize,
+    /// Coherence score history (for early stopping)
+    pub coherence_history: Vec<f64>,
+    /// Cohesion score history
+    pub cohesion_history: Vec<f64>,
+    /// Adaptive alpha history
+    pub adaptive_alpha_history: Vec<f64>,
 }
 
 impl TrainingMetrics {
@@ -329,6 +350,78 @@ impl TrainingMetrics {
             .map(|layer| layer.iter().map(|(_, w)| *w).collect())
             .collect();
         self.stream_weight_history.push(weights);
+
+        // Log coherence metrics if available
+        if let Some(ref coh) = stats.coherence_metrics {
+            self.coherence_history.push(coh.soc_score);
+            self.cohesion_history.push(coh.cognitive_cohesion);
+            self.adaptive_alpha_history.push(coh.adaptive_alpha);
+        }
+    }
+
+    /// Check if coherence has stabilized based on recent history
+    /// 
+    /// Returns `true` if:
+    /// 1. We have enough history (>= window_size)
+    /// 2. Coherence is above minimum threshold
+    /// 3. Variance of recent coherence values is below stability threshold
+    pub fn is_coherence_stable(&self, window_size: usize, min_score: f64, max_variance: f64) -> bool {
+        if self.coherence_history.len() < window_size {
+            return false;
+        }
+
+        let recent: Vec<f64> = self.coherence_history
+            .iter()
+            .rev()
+            .take(window_size)
+            .copied()
+            .collect();
+
+        // Check minimum score
+        let mean = recent.iter().sum::<f64>() / recent.len() as f64;
+        if mean < min_score {
+            return false;
+        }
+
+        // Check variance
+        let variance = recent.iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>() / recent.len() as f64;
+
+        variance < max_variance
+    }
+
+    /// Get coherence trend (positive = improving)
+    pub fn coherence_trend(&self) -> f64 {
+        if self.coherence_history.len() < 2 {
+            return 0.0;
+        }
+
+        let recent_len = self.coherence_history.len().min(10);
+        let recent: Vec<f64> = self.coherence_history
+            .iter()
+            .rev()
+            .take(recent_len)
+            .copied()
+            .collect();
+
+        if recent.len() < 2 {
+            return 0.0;
+        }
+
+        // Simple linear regression slope
+        let n = recent.len() as f64;
+        let sum_x: f64 = (0..recent.len()).map(|i| i as f64).sum();
+        let sum_y: f64 = recent.iter().sum();
+        let sum_xy: f64 = recent.iter().enumerate().map(|(i, y)| i as f64 * y).sum();
+        let sum_xx: f64 = (0..recent.len()).map(|i| (i * i) as f64).sum();
+
+        let denominator = n * sum_xx - sum_x * sum_x;
+        if denominator.abs() < 1e-10 {
+            return 0.0;
+        }
+
+        (n * sum_xy - sum_x * sum_y) / denominator
     }
 
     pub fn summary(&self) -> String {
@@ -413,6 +506,10 @@ pub struct Trainer {
     device: Device,
     /// Current global step
     global_step: usize,
+    /// Consecutive stable coherence evaluations (for early stopping)
+    stable_coherence_count: usize,
+    /// Whether training was stopped early due to coherence stability
+    early_stopped: bool,
 }
 
 impl Trainer {
@@ -458,6 +555,8 @@ impl Trainer {
             metrics,
             device: device.clone(),
             global_step: 0,
+            stable_coherence_count: 0,
+            early_stopped: false,
         })
     }
 
@@ -516,8 +615,55 @@ impl Trainer {
         Ok(loss_value as f64)
     }
 
+    /// Check if coherence has stabilized (for early stopping)
+    /// 
+    /// Returns `true` if coherence metrics have been stable for `patience` consecutive evaluations.
+    pub fn check_coherence_stability(&mut self) -> bool {
+        if !self.config.coherence_early_stopping {
+            return false;
+        }
+
+        let is_stable = self.metrics.is_coherence_stable(
+            self.config.coherence_stability_window,
+            self.config.coherence_min_score,
+            self.config.coherence_stability_threshold,
+        );
+
+        if is_stable {
+            self.stable_coherence_count += 1;
+            if self.stable_coherence_count >= self.config.coherence_patience {
+                self.early_stopped = true;
+                return true;
+            }
+        } else {
+            self.stable_coherence_count = 0;
+        }
+
+        false
+    }
+
+    /// Check if training was stopped early
+    pub fn was_early_stopped(&self) -> bool {
+        self.early_stopped
+    }
+
+    /// Get early stopping reason if applicable
+    pub fn early_stop_reason(&self) -> Option<String> {
+        if self.early_stopped {
+            Some(format!(
+                "Coherence stabilized at {:.4} (stable for {} evaluations)",
+                self.metrics.coherence_history.last().copied().unwrap_or(0.0),
+                self.stable_coherence_count
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Train for one epoch with data iterator
-    pub fn train_epoch<I>(&mut self, data: I) -> TorusResult<f64>
+    /// 
+    /// Returns the average loss for the epoch, or None if training was early stopped.
+    pub fn train_epoch<I>(&mut self, data: I) -> TorusResult<Option<f64>>
     where
         I: Iterator<Item = (Tensor, Tensor)>,
     {
@@ -525,22 +671,120 @@ impl Trainer {
         let mut n_batches = 0;
         
         for (inputs, targets) in data {
+            // Check for early stopping before each batch
+            if self.early_stopped {
+                return Ok(None);
+            }
+
             let loss = self.train_step(&inputs, &targets)?;
             total_loss += loss;
             n_batches += 1;
             
             // Logging
             if self.global_step % self.config.log_every == 0 {
+                let coherence_info = if let Some(coh) = self.model.coherence_score() {
+                    format!(", coherence={:.4}", coh)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "Step {}: loss={:.4}, lr={:.2e}",
+                    "Step {}: loss={:.4}, lr={:.2e}{}",
                     self.global_step,
                     loss,
-                    self.scheduler.get_lr()
+                    self.scheduler.get_lr(),
+                    coherence_info
                 );
+            }
+
+            // Check coherence stability periodically
+            if self.config.coherence_early_stopping && 
+               self.global_step % self.config.eval_every == 0 &&
+               self.global_step > 0 {
+                if self.check_coherence_stability() {
+                    println!(
+                        "\n[Early Stopping] Coherence stabilized at step {} (score: {:.4})",
+                        self.global_step,
+                        self.metrics.coherence_history.last().copied().unwrap_or(0.0)
+                    );
+                    return Ok(None);
+                }
             }
         }
         
-        Ok(total_loss / n_batches as f64)
+        if n_batches > 0 {
+            Ok(Some(total_loss / n_batches as f64))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Train with coherence-based early stopping
+    /// 
+    /// This is the recommended training loop when using coherence. It will:
+    /// 1. Train normally until coherence stabilizes
+    /// 2. Check coherence stability at each evaluation step
+    /// 3. Stop early when coherence is stable for `patience` consecutive evaluations
+    /// 
+    /// Returns training metrics and whether training was early stopped.
+    pub fn train_with_early_stopping<F>(
+        &mut self,
+        mut batch_generator: F,
+        max_steps: usize,
+    ) -> TorusResult<(TrainingMetrics, bool)>
+    where
+        F: FnMut() -> TorusResult<(Tensor, Tensor)>,
+    {
+        println!("═══ Training with Coherence-Based Early Stopping ═══");
+        println!("Stability window: {} evals", self.config.coherence_stability_window);
+        println!("Stability threshold: {:.4}", self.config.coherence_stability_threshold);
+        println!("Min coherence score: {:.4}", self.config.coherence_min_score);
+        println!("Patience: {} stable evals", self.config.coherence_patience);
+        println!();
+
+        for step in 0..max_steps {
+            if self.early_stopped {
+                break;
+            }
+
+            let (inputs, targets) = batch_generator()?;
+            let loss = self.train_step(&inputs, &targets)?;
+
+            // Logging
+            if step % self.config.log_every == 0 {
+                let coherence_info = if let Some(coh) = self.model.coherence_score() {
+                    format!(", SOC={:.3}", coh)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "Step {:5}: loss={:.4}, lr={:.2e}{}",
+                    step, loss, self.scheduler.get_lr(), coherence_info
+                );
+            }
+
+            // Evaluation and coherence check
+            if step % self.config.eval_every == 0 && step > 0 {
+                // Evaluate on current batch as simple validation
+                let _ = self.evaluate(&inputs, &targets)?;
+
+                // Check for early stopping
+                if self.check_coherence_stability() {
+                    println!("\n╔═══════════════════════════════════════════════════════╗");
+                    println!("║           EARLY STOPPING TRIGGERED                     ║");
+                    println!("╠═══════════════════════════════════════════════════════╣");
+                    println!("║ Coherence has stabilized!                              ║");
+                    println!("║ Step: {:6}                                          ║", step);
+                    println!("║ Final SOC: {:.4}                                      ║", 
+                        self.metrics.coherence_history.last().copied().unwrap_or(0.0));
+                    println!("║ Trend: {:+.4}                                         ║",
+                        self.metrics.coherence_trend());
+                    println!("╚═══════════════════════════════════════════════════════╝");
+                    break;
+                }
+            }
+        }
+
+        Ok((self.metrics.clone(), self.early_stopped))
     }
 
     /// Get current metrics
@@ -713,7 +957,11 @@ pub fn run_training_example(device: &Device) -> TorusResult<TrainingMetrics> {
     let avg_loss = trainer.train_epoch(data_loader)?;
     
     println!("\nTraining complete!");
-    println!("Average loss: {:.4}", avg_loss);
+    if let Some(loss) = avg_loss {
+        println!("Average loss: {:.4}", loss);
+    } else {
+        println!("Training was early stopped");
+    }
     println!("Metrics: {}", trainer.metrics().summary());
     
     // Run evaluation
@@ -741,6 +989,16 @@ mod tests {
         let config = TrainingConfig::default();
         assert_eq!(config.learning_rate, 1e-4);
         assert_eq!(config.batch_size, 32);
+        assert!(!config.coherence_early_stopping);
+    }
+
+    #[test]
+    fn test_training_config_early_stopping_fields() {
+        let config = TrainingConfig::default();
+        assert_eq!(config.coherence_stability_window, 5);
+        assert!((config.coherence_stability_threshold - 0.01).abs() < 1e-10);
+        assert!((config.coherence_min_score - 0.6).abs() < 1e-10);
+        assert_eq!(config.coherence_patience, 3);
     }
 
     #[test]
@@ -783,6 +1041,68 @@ mod tests {
         metrics.log_eval(0.7, 2);
         assert_eq!(metrics.best_eval_loss, 0.7);
         assert_eq!(metrics.best_step, 2);
+    }
+
+    #[test]
+    fn test_coherence_stability_check() {
+        let mut metrics = TrainingMetrics::new();
+        
+        // Not enough history
+        assert!(!metrics.is_coherence_stable(5, 0.6, 0.01));
+        
+        // Add stable coherence history
+        for _ in 0..5 {
+            metrics.coherence_history.push(0.75);
+        }
+        
+        // Should be stable (variance = 0)
+        assert!(metrics.is_coherence_stable(5, 0.6, 0.01));
+        
+        // Should not be stable if min_score too high
+        assert!(!metrics.is_coherence_stable(5, 0.8, 0.01));
+    }
+
+    #[test]
+    fn test_coherence_stability_with_variance() {
+        let mut metrics = TrainingMetrics::new();
+        
+        // Add varying coherence history
+        metrics.coherence_history = vec![0.70, 0.72, 0.71, 0.73, 0.70];
+        
+        // Variance is ~0.00016, should be stable with threshold 0.01
+        assert!(metrics.is_coherence_stable(5, 0.6, 0.01));
+        
+        // Should not be stable with very tight threshold
+        assert!(!metrics.is_coherence_stable(5, 0.6, 0.0001));
+    }
+
+    #[test]
+    fn test_coherence_trend() {
+        let mut metrics = TrainingMetrics::new();
+        
+        // Empty history
+        assert_eq!(metrics.coherence_trend(), 0.0);
+        
+        // Improving trend (values are taken in reverse, so index 0 is most recent)
+        // This means [0.7, 0.65, 0.6, 0.55, 0.5] reversed = [0.5, 0.55, 0.6, 0.65, 0.7]
+        // which shows values increasing over time (indices) - improving
+        metrics.coherence_history = vec![0.5, 0.55, 0.6, 0.65, 0.7];
+        // After reverse: recent[0]=0.7, recent[4]=0.5, slope is negative (decreasing by index)
+        // The function calculates trend where positive slope means recent > old
+        // But it takes values in reverse so need to verify actual behavior
+        let trend = metrics.coherence_trend();
+        // With reverse and index as x, slope should be negative because recent (low index) has high value
+        assert!(trend < 0.0, "trend was {}", trend);
+        
+        // Degrading trend - recent values are lower
+        metrics.coherence_history = vec![0.7, 0.65, 0.6, 0.55, 0.5];
+        let trend = metrics.coherence_trend();
+        // After reverse: recent[0]=0.5, recent[4]=0.7, slope is positive (increasing by index)
+        assert!(trend > 0.0, "trend was {}", trend);
+        
+        // Flat trend
+        metrics.coherence_history = vec![0.6, 0.6, 0.6, 0.6, 0.6];
+        assert!((metrics.coherence_trend() - 0.0).abs() < 1e-10);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+[package]
+name = "hello_worm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+worm_std = { path = "../../worm_std" }

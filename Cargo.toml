@@ -51,6 +51,13 @@ default = []
 python = ["pyo3"]
 cuda = ["candle-core/cuda"]
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true

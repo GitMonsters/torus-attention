@@ -9,9 +9,11 @@
 //!
 //! ```rust,ignore
 //! use torus_attention::dataset::{TextDataset, DataLoader};
+//! use torus_attention::tokenizer::BpeTokenizer;
 //!
-//! // Load from a text file
-//! let dataset = TextDataset::from_file("data/corpus.txt", &tokenizer)?;
+//! // Load from a text file (recommended: use BpeTokenizer for speed)
+//! let tokenizer = BpeTokenizer::new(50257);
+//! let dataset = TextDataset::from_file("data/corpus.txt", &tokenizer, 512)?;
 //!
 //! // Create batches
 //! let loader = DataLoader::new(dataset, 32, true);
@@ -28,7 +30,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::TorusError;
-use crate::tokenizer::SimpleTokenizer;
+use crate::tokenizer::{BpeTokenizer, SimpleTokenizer, Tokenizer};
 use crate::TorusResult;
 
 /// A single training example
@@ -59,12 +61,12 @@ impl TextDataset {
         }
     }
 
-    /// Load dataset from a plain text file
+    /// Load dataset from a plain text file using any tokenizer
     ///
     /// The file is split into chunks of `seq_len` tokens.
-    pub fn from_file(
+    pub fn from_file<T: Tokenizer>(
         path: impl AsRef<Path>,
-        tokenizer: &SimpleTokenizer,
+        tokenizer: &T,
         seq_len: usize,
     ) -> TorusResult<Self> {
         let content = fs::read_to_string(path.as_ref())
@@ -73,8 +75,8 @@ impl TextDataset {
         Self::from_text(&content, tokenizer, seq_len)
     }
 
-    /// Load dataset from a string
-    pub fn from_text(text: &str, tokenizer: &SimpleTokenizer, seq_len: usize) -> TorusResult<Self> {
+    /// Load dataset from a string using any tokenizer
+    pub fn from_text<T: Tokenizer>(text: &str, tokenizer: &T, seq_len: usize) -> TorusResult<Self> {
         let tokens = tokenizer.encode(text);
         let vocab_size = tokenizer.vocab_size();
 
@@ -98,12 +100,12 @@ impl TextDataset {
         Ok(dataset)
     }
 
-    /// Load dataset from JSON Lines file
+    /// Load dataset from JSON Lines file using any tokenizer
     ///
     /// Each line should be a JSON object with a "text" field.
-    pub fn from_jsonl(
+    pub fn from_jsonl<T: Tokenizer>(
         path: impl AsRef<Path>,
-        tokenizer: &SimpleTokenizer,
+        tokenizer: &T,
         seq_len: usize,
     ) -> TorusResult<Self> {
         let content = fs::read_to_string(path.as_ref())
@@ -140,10 +142,10 @@ impl TextDataset {
         Ok(dataset)
     }
 
-    /// Load from a directory of text files
-    pub fn from_directory(
+    /// Load from a directory of text files using any tokenizer
+    pub fn from_directory<T: Tokenizer>(
         dir: impl AsRef<Path>,
-        tokenizer: &SimpleTokenizer,
+        tokenizer: &T,
         seq_len: usize,
     ) -> TorusResult<Self> {
         let dir = dir.as_ref();
@@ -365,7 +367,15 @@ mod tests {
     }
 
     #[test]
-    fn test_from_text() {
+    fn test_from_text_with_bpe() {
+        let tokenizer = BpeTokenizer::new(1000);
+        let text = "Hello world! This is a test of the tokenizer. It should work well.";
+        let dataset = TextDataset::from_text(text, &tokenizer, 16).unwrap();
+        assert!(!dataset.is_empty());
+    }
+
+    #[test]
+    fn test_from_text_with_simple() {
         let tokenizer = SimpleTokenizer::new_basic(1000);
         let text = "Hello world! This is a test of the tokenizer. It should work well.";
         let dataset = TextDataset::from_text(text, &tokenizer, 16).unwrap();

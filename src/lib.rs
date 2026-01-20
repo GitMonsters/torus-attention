@@ -49,6 +49,7 @@ pub mod parallel_streams;
 
 // Training infrastructure
 pub mod training;
+pub mod metrics;
 
 // LLM and API server
 pub mod api_server;
@@ -105,7 +106,9 @@ pub use llm::{
     FeedForward, SamplingStrategy, TextGenerator, TorusLLM, TorusLLMConfig, TransformerBlock,
 };
 pub use llm_trainer::{LLMTrainer, LLMTrainingConfig};
-pub use tokenizer::{format_chat_prompt, ChatMessage, SimpleTokenizer, SpecialTokens};
+pub use tokenizer::{
+    format_chat_prompt, BpeTokenizer, ChatMessage, SimpleTokenizer, SpecialTokens, Tokenizer,
+};
 
 // Dynamic training exports
 pub use dynamic_trainer::{
@@ -113,6 +116,9 @@ pub use dynamic_trainer::{
     DynamicCompoundTrainer, DynamicEMAController, DynamicTrainingConfig, DynamicTrainingStats,
     GrowthConfig, GrowthController, LayerWiseLRController, MultiTaskScheduler, Task,
 };
+
+// Metrics exports
+pub use metrics::{MetricsCollector, MetricsLogger};
 
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;

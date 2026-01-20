@@ -684,7 +684,7 @@ impl Trainer {
             n_batches += 1;
 
             // Logging
-            if self.global_step.is_multiple_of(self.config.log_every) {
+            if self.config.log_every > 0 && self.global_step % self.config.log_every == 0 {
                 let coherence_info = if let Some(coh) = self.model.coherence_score() {
                     format!(", coherence={:.4}", coh)
                 } else {
@@ -702,7 +702,7 @@ impl Trainer {
             // Check coherence stability periodically
             if self.config.coherence_early_stopping
                 && self.global_step > 0
-                && self.global_step.is_multiple_of(self.config.eval_every)
+                && self.config.eval_every > 0 && self.global_step % self.config.eval_every == 0
                 && self.check_coherence_stability()
             {
                 println!(

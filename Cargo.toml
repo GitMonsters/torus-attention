@@ -68,6 +68,10 @@ rand = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
+# Tensorboard logging
+tensorboard-rs = "0.5"
+chrono = "0.4"
+
 [features]
 default = []
 python = ["pyo3"]

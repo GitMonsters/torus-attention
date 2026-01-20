@@ -28,7 +28,7 @@ use torus_attention::dynamic_trainer::{
     DynamicCompoundTrainer, DynamicTrainingConfig, GrowthConfig,
 };
 use torus_attention::llm::TorusLLMConfig;
-use torus_attention::tokenizer::SimpleTokenizer;
+use torus_attention::tokenizer::BpeTokenizer;
 
 /// Dynamic Compound Training for Torus LLM
 #[derive(Parser, Debug)]
@@ -170,6 +170,14 @@ struct Args {
     #[arg(long)]
     cuda: bool,
 
+    /// Enable Tensorboard logging
+    #[arg(long)]
+    tensorboard: bool,
+
+    /// Tensorboard log directory
+    #[arg(long, default_value = "logs")]
+    tensorboard_dir: PathBuf,
+
     /// Validation split ratio (if no separate val data provided)
     #[arg(long, default_value = "0.1")]
     val_split: f64,
@@ -204,8 +212,9 @@ fn main() -> anyhow::Result<()> {
     };
     log::info!("Using device: {:?}", device);
 
-    // Create tokenizer
-    let tokenizer = SimpleTokenizer::new_basic(args.vocab_size);
+    // Create tokenizer (use fast BPE tokenizer)
+    log::info!("Initializing BPE tokenizer...");
+    let tokenizer = BpeTokenizer::new(args.vocab_size);
 
     // Load or generate training data
     let train_dataset = if args.synthetic {
@@ -326,6 +335,12 @@ fn main() -> anyhow::Result<()> {
     log::info!("Initializing trainer...");
     let mut trainer =
         DynamicCompoundTrainer::new(training_config, train_dataset, val_dataset, device)?;
+
+    // Enable tensorboard logging if requested
+    if args.tensorboard {
+        log::info!("Enabling Tensorboard logging to {:?}", args.tensorboard_dir);
+        trainer.enable_metrics_logging(&args.tensorboard_dir)?;
+    }
 
     // Run training
     log::info!("Starting training...");

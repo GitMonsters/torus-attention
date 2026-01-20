@@ -27,4 +27,7 @@ pub enum TorusError {
 
     #[error("IO error: {0}")]
     Io(String),
+    
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }

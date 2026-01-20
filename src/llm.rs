@@ -300,9 +300,15 @@ impl TorusLLM {
     pub fn new(config: TorusLLMConfig, vb: VarBuilder) -> TorusResult<Self> {
         let device = vb.device().clone();
 
+        // Get the torus sequence length (n_major * n_minor)
+        // Position embeddings need to cover the full torus grid
+        let torus_config = config.to_torus_config();
+        let torus_seq_len = torus_config.seq_len();
+        let pos_emb_size = torus_seq_len.max(config.max_seq_len);
+
         // Token and position embeddings
         let token_emb = embedding(config.vocab_size, config.hidden_dim, vb.pp("token_emb"))?;
-        let pos_emb = embedding(config.max_seq_len, config.hidden_dim, vb.pp("pos_emb"))?;
+        let pos_emb = embedding(pos_emb_size, config.hidden_dim, vb.pp("pos_emb"))?;
         let emb_dropout = Dropout::new(config.dropout as f32);
 
         // Transformer layers

@@ -48,8 +48,8 @@ pub mod integration;
 pub mod parallel_streams;
 
 // Training infrastructure
-pub mod training;
 pub mod metrics;
+pub mod training;
 
 // LLM and API server
 pub mod api_server;

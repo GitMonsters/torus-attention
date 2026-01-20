@@ -702,7 +702,8 @@ impl Trainer {
             // Check coherence stability periodically
             if self.config.coherence_early_stopping
                 && self.global_step > 0
-                && self.config.eval_every > 0 && self.global_step % self.config.eval_every == 0
+                && self.config.eval_every > 0
+                && self.global_step % self.config.eval_every == 0
                 && self.check_coherence_stability()
             {
                 println!(

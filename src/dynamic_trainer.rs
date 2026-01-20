@@ -370,7 +370,10 @@ impl DynamicBatchController {
 
     /// Update batch size based on gradient statistics
     pub fn update(&mut self, step: usize) -> bool {
-        if self.adjust_interval == 0 || step % self.adjust_interval != 0 || self.grad_norm_history.len() < 10 {
+        if self.adjust_interval == 0
+            || step % self.adjust_interval != 0
+            || self.grad_norm_history.len() < 10
+        {
             return false;
         }
 
@@ -616,7 +619,8 @@ impl GrowthController {
         // Check all conditions for growth
         let below_threshold = loss < self.config.growth_threshold;
         let enough_steps = self.steps_since_growth >= self.config.min_steps_before_growth;
-        let at_interval = self.config.growth_interval > 0 && step % self.config.growth_interval == 0;
+        let at_interval =
+            self.config.growth_interval > 0 && step % self.config.growth_interval == 0;
         let can_grow = self.current_layers < self.config.final_layers
             || self.current_hidden_dim < self.config.final_hidden_dim
             || self.current_heads < self.config.final_heads;
@@ -942,10 +946,10 @@ pub struct DynamicCompoundTrainer {
     layer_lr: LayerWiseLRController,
     growth: GrowthController,
     ema_controller: DynamicEMAController,
-    
+
     // Coherence tracking
     coherence_layer: CognitiveCoherenceLayer,
-    
+
     // Metrics logging
     metrics_logger: Option<MetricsLogger>,
 
@@ -1009,7 +1013,7 @@ impl DynamicCompoundTrainer {
         let growth = GrowthController::new(config.growth_config.clone());
         let ema_controller =
             DynamicEMAController::new(model.config().num_layers, config.model.ema_alpha);
-        
+
         // Initialize coherence tracking
         let coherence_config = CoherenceConfig {
             n_streams: 8,
@@ -1052,7 +1056,10 @@ impl DynamicCompoundTrainer {
     /// Enable Tensorboard metrics logging
     ///
     /// Creates a timestamped log directory under the specified path.
-    pub fn enable_metrics_logging(&mut self, log_dir: impl AsRef<std::path::Path>) -> TorusResult<()> {
+    pub fn enable_metrics_logging(
+        &mut self,
+        log_dir: impl AsRef<std::path::Path>,
+    ) -> TorusResult<()> {
         let logger = MetricsLogger::new(log_dir)?;
         self.metrics_logger = Some(logger);
         Ok(())
@@ -1106,7 +1113,7 @@ impl DynamicCompoundTrainer {
                 // Logging
                 if self.config.log_interval > 0 && self.step % self.config.log_interval == 0 {
                     self.log_progress(epoch_loss / epoch_batches as f64, grad_norm);
-                    
+
                     // Log to tensorboard if enabled
                     self.log_metrics_to_tensorboard()?;
                 }
@@ -1155,10 +1162,10 @@ impl DynamicCompoundTrainer {
 
         // Backward pass with gradient clipping
         let grads = loss.backward()?;
-        
+
         // Compute gradient norm for monitoring
         let grad_norm = self.compute_grad_norm(&grads);
-        
+
         // Apply gradient clipping if configured
         if let Some(max_norm) = self.config.max_grad_norm {
             if grad_norm > max_norm {
@@ -1173,7 +1180,7 @@ impl DynamicCompoundTrainer {
                 );
             }
         }
-        
+
         // Optimizer step
         self.optimizer.backward_step(&loss)?;
 
@@ -1186,7 +1193,7 @@ impl DynamicCompoundTrainer {
     /// Compute the gradient norm from gradients
     fn compute_grad_norm(&self, grads: &candle_core::backprop::GradStore) -> f64 {
         let mut total_norm_sq = 0.0;
-        
+
         for var in self.varmap.all_vars() {
             if let Some(grad) = grads.get(&var) {
                 if let Ok(grad_sq) = grad.sqr() {
@@ -1198,7 +1205,7 @@ impl DynamicCompoundTrainer {
                 }
             }
         }
-        
+
         total_norm_sq.sqrt()
     }
 
@@ -1223,7 +1230,7 @@ impl DynamicCompoundTrainer {
         // In a full implementation, we'd compute this from attention patterns
         // For now, derive coherence from loss stability
         let coherence = self.update_coherence_from_loss(loss);
-        
+
         // Layer-wise learning rates (now driven by real coherence)
         if self.config.use_layer_wise_lr {
             // Derive per-layer coherence scores
@@ -1261,11 +1268,11 @@ impl DynamicCompoundTrainer {
         if self.config.use_dynamic_ema {
             // Use coherence to modulate EMA alpha
             let adaptive_alpha = self.coherence_layer.compute_adaptive_alpha();
-            
+
             // Update EMA controller with coherence information
             self.ema_controller.record(loss, coherence.score());
             self.ema_controller.update();
-            
+
             // Log coherence-driven alpha adjustment
             if self.config.log_interval > 0 && self.step % (self.config.log_interval * 10) == 0 {
                 log::debug!(
@@ -1283,7 +1290,7 @@ impl DynamicCompoundTrainer {
     }
 
     /// Update coherence metrics from loss dynamics
-    /// 
+    ///
     /// Derives comprehensibility, manageability, and meaningfulness from
     /// the training loss trajectory.
     fn update_coherence_from_loss(&mut self, loss: f64) -> SenseOfCoherence {
@@ -1292,7 +1299,8 @@ impl DynamicCompoundTrainer {
         let comprehensibility = if self.loss_history.len() >= 5 {
             let recent: Vec<f64> = self.loss_history.iter().rev().take(10).cloned().collect();
             let mean = recent.iter().sum::<f64>() / recent.len() as f64;
-            let variance = recent.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / recent.len() as f64;
+            let variance =
+                recent.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / recent.len() as f64;
             let std_dev = variance.sqrt();
             // Normalize: low std_dev = high comprehensibility
             (1.0 / (1.0 + std_dev / mean.max(0.1))).clamp(0.0, 1.0)
@@ -1331,7 +1339,7 @@ impl DynamicCompoundTrainer {
         };
 
         let soc = SenseOfCoherence::new(comprehensibility, manageability, meaningfulness);
-        
+
         // Track history
         self.coherence_history.push_back(soc.clone());
         if self.coherence_history.len() > 100 {
@@ -1538,8 +1546,12 @@ impl DynamicCompoundTrainer {
     /// Get current training statistics
     pub fn stats(&self) -> DynamicTrainingStats {
         // Get latest coherence from history
-        let coherence = self.coherence_history.back().map(|soc| soc.score()).unwrap_or(0.5);
-        
+        let coherence = self
+            .coherence_history
+            .back()
+            .map(|soc| soc.score())
+            .unwrap_or(0.5);
+
         DynamicTrainingStats {
             step: self.step,
             epoch: self.epoch,
@@ -1557,7 +1569,7 @@ impl DynamicCompoundTrainer {
             ema_alphas: self.ema_controller.get_all_alphas().to_vec(),
         }
     }
-    
+
     /// Get coherence summary for logging
     pub fn coherence_summary(&self) -> String {
         if let Some(soc) = self.coherence_history.back() {
@@ -1572,29 +1584,30 @@ impl DynamicCompoundTrainer {
             "SOC: N/A".to_string()
         }
     }
-    
+
     /// Log metrics to Tensorboard (if enabled)
     fn log_metrics_to_tensorboard(&mut self) -> TorusResult<()> {
         if self.metrics_logger.is_none() {
             return Ok(());
         }
-        
+
         // Compute stats and coherence before borrowing logger
         let stats = self.stats();
-        let coherence_data = self.coherence_history.back().map(|soc| {
-            (soc.comprehensibility, soc.manageability, soc.meaningfulness)
-        });
+        let coherence_data = self
+            .coherence_history
+            .back()
+            .map(|soc| (soc.comprehensibility, soc.manageability, soc.meaningfulness));
         let step = self.step;
-        
+
         // Now borrow logger and log
         if let Some(ref mut logger) = self.metrics_logger {
             logger.log_training_stats(&stats)?;
-            
+
             // Log coherence components separately
             if let Some((c, m, me)) = coherence_data {
                 logger.log_coherence(c, m, me, step)?;
             }
-            
+
             logger.flush()?;
         }
         Ok(())

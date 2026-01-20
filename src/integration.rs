@@ -3,17 +3,30 @@
 //! Combines all components into a cohesive bidirectional parallel
 //! compounding attention system:
 //!
-//! Input → 8-Stream Parallel → Symmetric Combine → EMA Compound → Output
+//! Input → 8-Stream Parallel → Symmetric Combine → Coherence-Modulated EMA → Output
 //!
 //! Features:
 //! - 8 parallel processing streams (major/minor forward/backward, spiral CW/CCW, cross U↔V)
 //! - Symmetric bidirectional combination with learned weights
 //! - Multi-layer EMA compounding with learnable α per layer
+//! - **Cognitive coherence integration** (SOC + SMM for adaptive compounding)
 //! - Torus-aware position encodings and geodesic biases
 //! - Full integration with the original torus attention system
+//!
+//! ## Cognitive Coherence Integration
+//!
+//! The coherence module bridges cognitive cohesion (inter-stream alignment)
+//! with psychological coherence (state stability):
+//!
+//! ```text
+//! 8 Streams → SMM (alignment) → Coherence-weighted fusion
+//!                   ↓
+//!           SOC (stability) → Adaptive α for EMA
+//! ```
 
 use crate::attention::{Activation, TorusFeedForward};
 use crate::bidirectional::TorusBidirectionalEncoding;
+use crate::coherence::{CognitiveCoherenceLayer, CoherenceConfig};
 use crate::compounding::{CompoundingConfig, EMACompounding, MultiScaleCompounding};
 use crate::geometry::{TorusDistanceMatrix, TorusManifold};
 use crate::parallel_streams::{ParallelStreamConfig, ParallelStreamProcessor, StreamId};
@@ -67,6 +80,12 @@ pub struct BidirectionalTorusConfig {
     pub dropout: f64,
     /// Number of position encoding frequencies
     pub n_pos_frequencies: usize,
+    /// Whether to use cognitive coherence for adaptive compounding
+    pub use_coherence: bool,
+    /// Coherence threshold for stable processing
+    pub coherence_threshold: f64,
+    /// Learning rate for shared mental model updates
+    pub smm_learning_rate: f64,
 }
 
 impl Default for BidirectionalTorusConfig {
@@ -93,6 +112,9 @@ impl Default for BidirectionalTorusConfig {
             geodesic_sigma: 0.5,
             dropout: 0.1,
             n_pos_frequencies: 16,
+            use_coherence: true,
+            coherence_threshold: 0.6,
+            smm_learning_rate: 0.01,
         }
     }
 }
@@ -131,6 +153,23 @@ impl BidirectionalTorusConfig {
             learnable_alpha: self.learnable_alpha,
         }
     }
+
+    /// Convert to coherence config
+    pub fn to_coherence_config(&self) -> CoherenceConfig {
+        CoherenceConfig {
+            n_streams: 8,
+            d_model: self.d_model,
+            smm_learning_rate: self.smm_learning_rate,
+            base_alpha: self.ema_alpha,
+            min_alpha: 0.1,
+            max_alpha: 0.99,
+            coherence_threshold: self.coherence_threshold,
+            adaptive_alpha: true,
+            comprehensibility_weight: 0.25,
+            manageability_weight: 0.25,
+            meaningfulness_weight: 0.50,
+        }
+    }
 }
 
 /// Single layer of the bidirectional torus transformer
@@ -150,6 +189,14 @@ pub struct BidirectionalTorusLayer {
     /// Configuration
     #[allow(dead_code)]
     config: BidirectionalTorusConfig,
+}
+
+/// Output from a layer forward pass, including optional attention for coherence
+pub struct LayerOutput {
+    /// The main output tensor
+    pub output: Tensor,
+    /// Combined attention pattern (for coherence updates)
+    pub attention: Option<Tensor>,
 }
 
 impl BidirectionalTorusLayer {
@@ -187,11 +234,27 @@ impl BidirectionalTorusLayer {
 
     /// Forward pass through the layer
     pub fn forward(&self, x: &Tensor) -> TorusResult<Tensor> {
+        self.forward_with_attention(x).map(|out| out.output)
+    }
+
+    /// Forward pass that also returns attention patterns for coherence tracking
+    pub fn forward_with_attention(&self, x: &Tensor) -> TorusResult<LayerOutput> {
         // Pre-norm
         let x_norm = self.pre_norm.forward(x)?;
 
         // 8-stream parallel attention
         let attn_out = self.parallel_streams.forward(&x_norm)?;
+
+        // Create a simple attention proxy from the output (normalized dot-product with input)
+        // This serves as a "how much the output attends to the input" signal
+        let attention = {
+            let x_flat = x_norm.flatten_all()?;
+            let out_flat = attn_out.flatten_all()?;
+            // Compute attention-like pattern: softmax of dot products
+            let scores = (&x_flat * &out_flat)?;
+            let attn = candle_nn::ops::softmax(&scores, 0)?;
+            Some(attn)
+        };
 
         // Residual
         let x = (x + attn_out)?;
@@ -205,7 +268,7 @@ impl BidirectionalTorusLayer {
         // Final residual
         let output = (x + ff_out)?;
 
-        Ok(output)
+        Ok(LayerOutput { output, attention })
     }
 
     /// Get current stream weights
@@ -214,7 +277,7 @@ impl BidirectionalTorusLayer {
     }
 }
 
-/// Complete bidirectional torus transformer with compounding
+/// Complete bidirectional torus transformer with compounding and coherence
 #[derive(Debug)]
 pub struct BidirectionalTorusTransformer {
     /// Input embedding (if needed)
@@ -230,6 +293,8 @@ pub struct BidirectionalTorusTransformer {
     compounding: Option<EMACompounding>,
     /// Multi-scale compounding (alternative)
     multi_scale_compounding: Option<MultiScaleCompounding>,
+    /// Cognitive coherence layer (optional)
+    coherence: Option<CognitiveCoherenceLayer>,
     /// Output projection
     output_proj: Linear,
     /// Final layer norm
@@ -307,6 +372,16 @@ impl BidirectionalTorusTransformer {
             (None, None)
         };
 
+        // Cognitive coherence layer
+        let coherence = if config.use_coherence {
+            Some(CognitiveCoherenceLayer::new(
+                config.to_coherence_config(),
+                device,
+            ))
+        } else {
+            None
+        };
+
         // Output projection
         let output_proj = candle_nn::linear(
             config.d_model,
@@ -323,6 +398,7 @@ impl BidirectionalTorusTransformer {
             layers,
             compounding,
             multi_scale_compounding,
+            coherence,
             output_proj,
             final_norm,
             config,
@@ -366,18 +442,39 @@ impl BidirectionalTorusTransformer {
         let pos_enc_broadcast = pos_enc.unsqueeze(0)?.broadcast_as((batch_size, seq_len, self.config.d_model))?;
         h = (h + pos_enc_broadcast)?;
 
-        // Process through layers with compounding
+        // Process through layers with compounding and coherence
         for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let layer_out = layer.forward(&h)?;
+            // Forward with attention for coherence tracking
+            let layer_output = layer.forward_with_attention(&h)?;
+            let mut layer_out = layer_output.output;
 
-            // Apply compounding
-            h = if let Some(ref mut comp) = self.compounding {
-                comp.compound(layer_idx, &layer_out)?
-            } else if let Some(ref mut multi) = self.multi_scale_compounding {
-                multi.compound(layer_idx, &layer_out)?
+            // Update coherence if enabled and attention is available
+            if let (Some(ref mut coherence), Some(ref attention)) = (&mut self.coherence, &layer_output.attention) {
+                // Update SOC from attention patterns
+                coherence.update_soc(attention, &layer_out)?;
+                
+                // Get adaptive alpha from coherence
+                let adaptive_alpha = coherence.compute_adaptive_alpha();
+                
+                // Apply coherence-modulated compounding
+                if let Some(ref mut comp) = self.compounding {
+                    // Use coherence-adjusted alpha for this layer's compounding
+                    layer_out = comp.compound_with_alpha(layer_idx, &layer_out, adaptive_alpha)?;
+                } else if let Some(ref mut multi) = self.multi_scale_compounding {
+                    layer_out = multi.compound(layer_idx, &layer_out)?;
+                }
             } else {
-                layer_out
-            };
+                // Standard compounding without coherence
+                layer_out = if let Some(ref mut comp) = self.compounding {
+                    comp.compound(layer_idx, &layer_out)?
+                } else if let Some(ref mut multi) = self.multi_scale_compounding {
+                    multi.compound(layer_idx, &layer_out)?
+                } else {
+                    layer_out
+                };
+            }
+
+            h = layer_out;
         }
 
         // Final norm
@@ -415,6 +512,36 @@ impl BidirectionalTorusTransformer {
         } else {
             Ok(None)
         }
+    }
+
+    /// Get current coherence state
+    pub fn get_coherence(&self) -> Option<&CognitiveCoherenceLayer> {
+        self.coherence.as_ref()
+    }
+
+    /// Get current coherence state (mutable)
+    pub fn get_coherence_mut(&mut self) -> Option<&mut CognitiveCoherenceLayer> {
+        self.coherence.as_mut()
+    }
+
+    /// Get current SOC score
+    pub fn coherence_score(&self) -> Option<f64> {
+        self.coherence.as_ref().map(|c| c.psychological_coherence())
+    }
+
+    /// Get current cognitive cohesion score
+    pub fn cohesion_score(&self) -> Option<f64> {
+        self.coherence.as_ref().map(|c| c.cognitive_cohesion())
+    }
+
+    /// Check if the system is in a coherent state
+    pub fn is_coherent(&self) -> Option<bool> {
+        self.coherence.as_ref().map(|c| c.is_coherent())
+    }
+
+    /// Get coherence summary string
+    pub fn coherence_summary(&self) -> Option<String> {
+        self.coherence.as_ref().map(|c| c.summary())
     }
 
     /// Get configuration
@@ -476,6 +603,29 @@ pub struct BidirectionalStats {
     pub compounding_alphas: Vec<f64>,
     /// Multi-scale weights (if applicable)
     pub scale_weights: Option<Vec<f32>>,
+    /// Coherence metrics (if coherence enabled)
+    pub coherence_metrics: Option<CoherenceMetrics>,
+}
+
+/// Coherence-specific metrics extracted from the transformer
+#[derive(Debug, Clone)]
+pub struct CoherenceMetrics {
+    /// Sense of coherence score (0-1)
+    pub soc_score: f64,
+    /// Comprehensibility component
+    pub comprehensibility: f64,
+    /// Manageability component
+    pub manageability: f64,
+    /// Meaningfulness component
+    pub meaningfulness: f64,
+    /// Cognitive cohesion (inter-stream alignment)
+    pub cognitive_cohesion: f64,
+    /// Current adaptive alpha
+    pub adaptive_alpha: f64,
+    /// Coherence trend (positive = improving)
+    pub coherence_trend: f64,
+    /// Whether system is in coherent state
+    pub is_coherent: bool,
 }
 
 impl BidirectionalStats {
@@ -490,10 +640,26 @@ impl BidirectionalStats {
             None
         };
 
+        // Extract coherence metrics if available
+        let coherence_metrics = transformer.coherence.as_ref().map(|c| {
+            let soc = c.soc();
+            CoherenceMetrics {
+                soc_score: soc.score(),
+                comprehensibility: soc.comprehensibility,
+                manageability: soc.manageability,
+                meaningfulness: soc.meaningfulness,
+                cognitive_cohesion: c.cognitive_cohesion(),
+                adaptive_alpha: c.compute_adaptive_alpha(),
+                coherence_trend: c.coherence_trend(),
+                is_coherent: c.is_coherent(),
+            }
+        });
+
         Ok(Self {
             stream_weights,
             compounding_alphas,
             scale_weights,
+            coherence_metrics,
         })
     }
 
@@ -522,6 +688,18 @@ impl BidirectionalStats {
             println!("Medium: {:.4}", scales.get(1).unwrap_or(&0.0));
             println!("Slow:   {:.4}", scales.get(2).unwrap_or(&0.0));
         }
+
+        if let Some(ref coh) = self.coherence_metrics {
+            println!("\n── Cognitive Coherence ──");
+            println!("SOC Score:         {:.4}", coh.soc_score);
+            println!("  Comprehensibility: {:.4}", coh.comprehensibility);
+            println!("  Manageability:     {:.4}", coh.manageability);
+            println!("  Meaningfulness:    {:.4}", coh.meaningfulness);
+            println!("Cognitive Cohesion: {:.4}", coh.cognitive_cohesion);
+            println!("Adaptive Alpha:     {:.4}", coh.adaptive_alpha);
+            println!("Coherence Trend:    {:+.4}", coh.coherence_trend);
+            println!("Status:             {}", if coh.is_coherent { "COHERENT" } else { "UNCERTAIN" });
+        }
     }
 }
 
@@ -537,6 +715,7 @@ mod tests {
         assert!(config.use_parallel_streams);
         assert!(config.use_compounding);
         assert!(config.learnable_alpha);
+        assert!(config.use_coherence);
     }
 
     #[test]
@@ -559,5 +738,21 @@ mod tests {
         let comp = config.to_compounding_config();
         assert_eq!(comp.n_layers, config.n_layers);
         assert_eq!(comp.base_alpha, config.ema_alpha);
+    }
+
+    #[test]
+    fn test_to_coherence_config() {
+        let config = BidirectionalTorusConfig::default();
+        let coh = config.to_coherence_config();
+        assert_eq!(coh.n_streams, 8);
+        assert_eq!(coh.d_model, config.d_model);
+        assert_eq!(coh.coherence_threshold, config.coherence_threshold);
+    }
+
+    #[test]
+    fn test_config_without_coherence() {
+        let mut config = BidirectionalTorusConfig::default();
+        config.use_coherence = false;
+        assert!(!config.use_coherence);
     }
 }

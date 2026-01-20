@@ -100,6 +100,8 @@ pub use integration::{
     BidirectionalTorusTransformer,
     BidirectionalTorusInference,
     BidirectionalStats,
+    CoherenceMetrics,
+    LayerOutput,
 };
 pub use training::{
     TrainingConfig,

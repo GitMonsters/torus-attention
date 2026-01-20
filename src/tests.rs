@@ -1026,6 +1026,9 @@ mod e2e_tests {
             geodesic_sigma: 0.3,
             dropout: 0.15,
             n_pos_frequencies: 32,
+            use_coherence: true,
+            coherence_threshold: 0.7,
+            smm_learning_rate: 0.02,
         };
         
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -1035,6 +1038,7 @@ mod e2e_tests {
         assert_eq!(config.n_layers, recovered.n_layers);
         assert_eq!(config.use_multi_scale, recovered.use_multi_scale);
         assert!((config.ema_alpha - recovered.ema_alpha).abs() < 1e-10);
+        assert_eq!(config.use_coherence, recovered.use_coherence);
     }
 
     #[test]

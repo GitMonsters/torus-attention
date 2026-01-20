@@ -31,7 +31,7 @@
 //! ```
 
 use crate::TorusResult;
-use candle_core::{DType, Device, IndexOp, Tensor, D};
+use candle_core::{Device, Tensor};
 use serde::{Deserialize, Serialize};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -368,6 +368,7 @@ pub struct CognitiveCoherenceLayer {
     max_history: usize,
     
     /// Device for tensor operations
+    #[allow(dead_code)]
     device: Device,
 }
 

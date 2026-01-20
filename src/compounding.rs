@@ -296,6 +296,58 @@ impl EMACompounding {
         Ok(h_new)
     }
 
+    /// Apply EMA compounding with an externally-provided alpha value
+    /// 
+    /// This is used for coherence-modulated compounding where the alpha
+    /// is dynamically adjusted based on coherence metrics (SOC/SMM).
+    pub fn compound_with_alpha(&mut self, layer: usize, new_value: &Tensor, external_alpha: f64) -> TorusResult<Tensor> {
+        if layer >= self.config.n_layers {
+            return Err(TorusError::InvalidParameter(format!(
+                "Layer {} exceeds configured layers {}",
+                layer, self.config.n_layers
+            )));
+        }
+
+        // Initialize state if needed
+        self.init_state(layer, new_value.dims())?;
+
+        // Use the externally-provided alpha instead of the learned one
+        let alpha = external_alpha.clamp(self.config.min_alpha, self.config.max_alpha);
+        let one_minus_alpha = 1.0 - alpha;
+
+        let state = self.states[layer].as_mut().unwrap();
+        
+        let h_new = if self.config.use_momentum {
+            // Momentum-enhanced EMA with external alpha
+            let beta = if let Some(ref betas) = self.momentum_betas {
+                betas[layer].get()?
+            } else {
+                self.config.momentum_beta
+            };
+
+            // Update velocity: v_t = β * v_{t-1} + (1 - β) * (new - h_{t-1})
+            let diff = (new_value - &state.hidden)?;
+            let vel = state.velocity.as_ref().unwrap();
+            let new_velocity = ((vel * beta)? + (&diff * (1.0 - beta))?)?;
+            
+            // Update hidden with momentum: h_t = h_{t-1} + α * v_t
+            let h = (&state.hidden + (&new_velocity * alpha)?)?;
+            
+            state.velocity = Some(new_velocity);
+            h
+        } else {
+            // Standard EMA with external alpha: h_t = α * new + (1 - α) * h_{t-1}
+            let weighted_new = (new_value * alpha)?;
+            let weighted_old = (&state.hidden * one_minus_alpha)?;
+            (weighted_new + weighted_old)?
+        };
+
+        state.hidden = h_new.clone();
+        state.step_count += 1;
+
+        Ok(h_new)
+    }
+
     /// Compound with bias correction (Adam-style)
     pub fn compound_corrected(&mut self, layer: usize, new_value: &Tensor) -> TorusResult<Tensor> {
         let h = self.compound(layer, new_value)?;

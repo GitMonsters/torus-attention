@@ -8,10 +8,10 @@
 
 use torus_attention::{
     // Core geometry
-    geometry::{TorusCoordinate, TorusDistanceMatrix, TorusManifold},
+    geometry::{TorusCoordinate, TorusManifold},
     periodic::PeriodicBoundary,
     // Vortex dynamics
-    vortex::{SpiralAttention, Vortex, VortexDynamics, BidirectionalSpiral, DirectionalSpiral, SpiralDirection},
+    vortex::{VortexDynamics, BidirectionalSpiral},
     // Bidirectional processing
     bidirectional::{FlowDirection, CausalMask, SymmetricCombiner},
     parallel_streams::{StreamId, ParallelStreamConfig},

@@ -7,12 +7,11 @@
 //! - Helical information flow
 //! - Topological winding numbers
 
-use crate::error::TorusError;
 use crate::geometry::{TorusCoordinate, TorusManifold};
 use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
 use candle_core::{DType, Device, Tensor};
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -58,7 +57,7 @@ impl Vortex {
         
         // Distance with core regularization
         let r2 = du * du + dv * dv + self.core_size * self.core_size;
-        let r = r2.sqrt();
+        let _r = r2.sqrt();
 
         // Velocity perpendicular to displacement (2D vortex on flat torus)
         let vel_scale = self.circulation / (2.0 * PI * r2);

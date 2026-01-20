@@ -12,22 +12,15 @@
 //! - Torus-aware position encodings and geodesic biases
 //! - Full integration with the original torus attention system
 
-use crate::attention::{TorusAttentionConfig, Activation, TorusFeedForward};
-use crate::bidirectional::{
-    BidirectionalAttention, FlowDirection, SymmetricCombiner, TorusBidirectionalEncoding,
-};
+use crate::attention::{Activation, TorusFeedForward};
+use crate::bidirectional::TorusBidirectionalEncoding;
 use crate::compounding::{CompoundingConfig, EMACompounding, MultiScaleCompounding};
-use crate::dual_loop::{DualLoopConfig, DualLoopFlow};
-use crate::error::TorusError;
-use crate::geometry::{TorusCoordinate, TorusDistanceMatrix, TorusManifold};
+use crate::geometry::{TorusDistanceMatrix, TorusManifold};
 use crate::parallel_streams::{ParallelStreamConfig, ParallelStreamProcessor, StreamId};
-use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
-use candle_core::{DType, Device, IndexOp, Tensor, D};
+use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
 
 /// Configuration for the unified bidirectional system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,8 +145,10 @@ pub struct BidirectionalTorusLayer {
     /// Post-attention layer norm
     post_attn_norm: candle_nn::LayerNorm,
     /// Layer index
+    #[allow(dead_code)]
     layer_idx: usize,
     /// Configuration
+    #[allow(dead_code)]
     config: BidirectionalTorusConfig,
 }
 
@@ -227,6 +222,7 @@ pub struct BidirectionalTorusTransformer {
     /// Bidirectional position encodings
     position_encodings: TorusBidirectionalEncoding,
     /// Geodesic distance bias
+    #[allow(dead_code)]
     geodesic_bias: Option<Tensor>,
     /// Transformer layers
     layers: Vec<BidirectionalTorusLayer>,
@@ -241,6 +237,7 @@ pub struct BidirectionalTorusTransformer {
     /// Configuration
     config: BidirectionalTorusConfig,
     /// Device
+    #[allow(dead_code)]
     device: Device,
 }
 
@@ -450,7 +447,7 @@ impl BidirectionalTorusInference {
     }
 
     /// Forward pass with optional KV caching
-    pub fn forward(&mut self, x: &Tensor, use_cache: bool) -> TorusResult<Tensor> {
+    pub fn forward(&mut self, x: &Tensor, _use_cache: bool) -> TorusResult<Tensor> {
         // For now, delegate to transformer
         // Full KV caching would require modifications to the attention layers
         self.transformer.forward(x)

@@ -8,7 +8,6 @@
 //! - Metrics tracking and logging
 
 use crate::integration::{BidirectionalTorusConfig, BidirectionalTorusTransformer, BidirectionalStats};
-use crate::error::TorusError;
 use crate::TorusResult;
 use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{VarBuilder, VarMap, Optimizer, AdamW, ParamsAdamW};
@@ -364,7 +363,7 @@ pub fn compute_grad_norm(grads: &HashMap<String, Tensor>) -> TorusResult<f64> {
     let mut total_norm_sq = 0.0f64;
     
     for (_, grad) in grads {
-        let grad_flat = grad.flatten_all()?;
+        let grad_flat: Tensor = grad.flatten_all()?;
         let norm_sq: f32 = grad_flat.sqr()?.sum_all()?.to_scalar()?;
         total_norm_sq += norm_sq as f64;
     }
@@ -410,6 +409,7 @@ pub struct Trainer {
     /// Metrics tracker
     metrics: TrainingMetrics,
     /// Device
+    #[allow(dead_code)]
     device: Device,
     /// Current global step
     global_step: usize,
@@ -604,6 +604,7 @@ pub struct SimpleDataLoader {
     targets: Tensor,
     batch_size: usize,
     current_idx: usize,
+    #[allow(dead_code)]
     shuffle: bool,
 }
 

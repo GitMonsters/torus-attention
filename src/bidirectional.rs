@@ -9,15 +9,10 @@
 //! - Backward flow: anti-causal attention from future to past
 //! - Symmetric combination: ensures equal treatment of both directions
 
-use crate::error::TorusError;
-use crate::geometry::TorusCoordinate;
-use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
 use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{Linear, Module, VarBuilder};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
 
 /// Direction of information flow
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -221,7 +216,7 @@ impl DirectionalAttention {
 
     /// Forward pass with directional causal masking
     pub fn forward(&mut self, x: &Tensor, device: &Device) -> TorusResult<Tensor> {
-        let (batch_size, seq_len, d_model) = x.dims3()?;
+        let (batch_size, seq_len, _d_model) = x.dims3()?;
 
         // Project Q, K, V
         let q = self.query.forward(x)?;
@@ -291,6 +286,7 @@ pub struct BidirectionalAttention {
     /// Layer normalization
     norm: candle_nn::LayerNorm,
     /// Model dimension
+    #[allow(dead_code)]
     d_model: usize,
 }
 
@@ -301,7 +297,7 @@ impl BidirectionalAttention {
         seq_len: usize,
         combiner_temperature: f64,
         vb: VarBuilder,
-        device: &Device,
+        _device: &Device,
     ) -> TorusResult<Self> {
         let forward = DirectionalAttention::new(
             d_model,

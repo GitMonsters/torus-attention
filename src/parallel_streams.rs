@@ -12,8 +12,6 @@
 //!
 //! All streams execute in parallel using rayon, with learned mixing weights.
 
-use crate::bidirectional::{BidirectionalAttention, FlowDirection, SymmetricCombiner};
-use crate::error::TorusError;
 use crate::geometry::TorusCoordinate;
 use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
@@ -21,8 +19,6 @@ use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{Linear, Module, VarBuilder};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
-use std::sync::{Arc, Mutex};
 
 /// Identifier for each of the 8 processing streams
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -328,7 +324,7 @@ impl ProcessingStream {
 
     /// Forward pass for this stream
     pub fn forward(&self, x: &Tensor) -> TorusResult<Tensor> {
-        let (batch_size, seq_len, d_model) = x.dims3()?;
+        let (batch_size, seq_len, _d_model) = x.dims3()?;
 
         // Project Q, K, V
         let q = self.query.forward(x)?;

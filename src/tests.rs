@@ -4,14 +4,11 @@
 
 use crate::geometry::{TorusCoordinate, TorusManifold, TorusDistanceMatrix};
 use crate::periodic::PeriodicBoundary;
-use crate::bidirectional::FlowDirection;
-use crate::parallel_streams::{StreamId, ParallelStreamConfig};
+use crate::parallel_streams::StreamId;
 use crate::compounding::{CompoundingConfig, LearnableAlpha};
 use crate::integration::BidirectionalTorusConfig;
 use crate::vortex::{Vortex, SpiralAttention};
-use crate::error::TorusError;
-use crate::TorusResult;
-use candle_core::{Device, DType, Tensor};
+use candle_core::{Device, Tensor};
 use std::f64::consts::PI;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -27,7 +24,7 @@ mod geometry_tests {
         // Test that coordinates wrap around correctly
         let c1 = TorusCoordinate::new(0.0, 0.0);
         let c2 = TorusCoordinate::new(2.0 * PI, 2.0 * PI);
-        let c3 = TorusCoordinate::new(4.0 * PI, 4.0 * PI);
+        let _c3 = TorusCoordinate::new(4.0 * PI, 4.0 * PI);
         
         // All should represent the same point on the torus
         assert!((c1.u - c2.u).abs() < 1e-10 || (c1.u - c2.u - 2.0 * PI).abs() < 1e-10);
@@ -374,7 +371,6 @@ mod config_tests {
 
 #[cfg(test)]
 mod mask_tests {
-    use super::*;
 
     #[test]
     fn test_causal_mask_diagonal() {

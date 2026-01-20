@@ -14,10 +14,9 @@
 
 use crate::error::TorusError;
 use crate::TorusResult;
-use candle_core::{DType, Device, IndexOp, Tensor, D};
-use candle_nn::{VarBuilder, Module};
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Configuration for EMA compounding
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,7 +260,7 @@ impl EMACompounding {
         self.init_state(layer, new_value.dims())?;
 
         let alpha = self.alphas[layer].as_tensor()?;
-        let one_minus_alpha = (1.0 - alpha.to_vec1::<f32>()?[0] as f64);
+        let one_minus_alpha = 1.0 - alpha.to_vec1::<f32>()?[0] as f64;
 
         let state = self.states[layer].as_mut().unwrap();
         

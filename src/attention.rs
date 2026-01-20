@@ -5,15 +5,12 @@
 //! and dual-loop information flow.
 
 use crate::dual_loop::{DualLoopConfig, DualLoopFlow};
-use crate::error::TorusError;
-use crate::geometry::{TorusCoordinate, TorusDistanceMatrix, TorusManifold};
-use crate::periodic::{PeriodicAttentionMask, PeriodicBoundary};
-use crate::vortex::VortexDynamics;
+use crate::geometry::{TorusDistanceMatrix, TorusManifold};
+use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
 
 /// Configuration for torus attention
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +169,7 @@ impl TorusAttention {
         let head_dim = d_model / n_heads;
 
         // Add position encodings
-        let pos_enc = self.position_encodings.broadcast_as((batch_size, seq_len, self.position_encodings.dims()[1]))?;
+        let _pos_enc = self.position_encodings.broadcast_as((batch_size, seq_len, self.position_encodings.dims()[1]))?;
         
         // If position encoding dimension differs from d_model, we need to project or slice
         // For simplicity, we'll add after projecting x to include spatial information
@@ -328,6 +325,7 @@ pub struct TorusTransformer {
     blocks: Vec<TorusTransformerBlock>,
     embedding: Linear,
     output_proj: Linear,
+    #[allow(dead_code)]
     config: TorusAttentionConfig,
 }
 

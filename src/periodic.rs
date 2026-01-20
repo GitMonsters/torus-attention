@@ -4,8 +4,8 @@
 //! This module handles wrapping, interpolation, and convolution on the torus.
 
 use crate::geometry::TorusCoordinate;
-use candle_core::{DType, Device, Tensor};
-use ndarray::{Array2, Axis};
+use candle_core::{Device, Tensor};
+use ndarray::Array2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;

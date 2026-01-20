@@ -7,14 +7,10 @@
 //! This module implements attention mechanisms that leverage
 //! both loops for hierarchical information processing.
 
-use crate::error::TorusError;
-use crate::geometry::TorusCoordinate;
-use crate::periodic::PeriodicBoundary;
 use crate::TorusResult;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use ndarray::Array2;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 

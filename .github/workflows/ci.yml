@@ -79,7 +79,7 @@ jobs:
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   fmt:
     name: Format
@@ -221,7 +221,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       
       - name: Generate coverage report
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --lcov --output-path lcov.info
       
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

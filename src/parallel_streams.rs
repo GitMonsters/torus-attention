@@ -335,16 +335,20 @@ impl ProcessingStream {
         // Reshape for multi-head: [B, S, D] -> [B, H, S, D/H]
         let q = q
             .reshape((batch_size, seq_len, self.n_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let k = k
             .reshape((batch_size, seq_len, self.n_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let v = v
             .reshape((batch_size, seq_len, self.n_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
         // Attention scores
-        let scores = q.matmul(&k.transpose(2, 3)?)?;
+        let k_t = k.transpose(2, 3)?.contiguous()?;
+        let scores = q.matmul(&k_t)?;
         let scores = (scores * self.scale)?;
 
         // Apply stream-specific mask

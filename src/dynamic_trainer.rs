@@ -244,7 +244,7 @@ impl MultiTaskScheduler {
         }
 
         // Rebalance if needed
-        if self.rebalance_interval > 0 && step % self.rebalance_interval == 0 {
+        if self.rebalance_interval > 0 && step.is_multiple_of(self.rebalance_interval) {
             self.rebalance_weights();
         }
     }
@@ -371,7 +371,7 @@ impl DynamicBatchController {
     /// Update batch size based on gradient statistics
     pub fn update(&mut self, step: usize) -> bool {
         if self.adjust_interval == 0
-            || step % self.adjust_interval != 0
+            || !step.is_multiple_of(self.adjust_interval)
             || self.grad_norm_history.len() < 10
         {
             return false;
@@ -620,7 +620,7 @@ impl GrowthController {
         let below_threshold = loss < self.config.growth_threshold;
         let enough_steps = self.steps_since_growth >= self.config.min_steps_before_growth;
         let at_interval =
-            self.config.growth_interval > 0 && step % self.config.growth_interval == 0;
+            self.config.growth_interval > 0 && step.is_multiple_of(self.config.growth_interval);
         let can_grow = self.current_layers < self.config.final_layers
             || self.current_hidden_dim < self.config.final_hidden_dim
             || self.current_heads < self.config.final_heads;
@@ -1111,7 +1111,7 @@ impl DynamicCompoundTrainer {
                 self.apply_dynamic_adjustments(loss)?;
 
                 // Logging
-                if self.config.log_interval > 0 && self.step % self.config.log_interval == 0 {
+                if self.config.log_interval > 0 && self.step.is_multiple_of(self.config.log_interval) {
                     self.log_progress(epoch_loss / epoch_batches as f64, grad_norm);
 
                     // Log to tensorboard if enabled
@@ -1119,7 +1119,7 @@ impl DynamicCompoundTrainer {
                 }
 
                 // Validation
-                if self.config.eval_interval > 0 && self.step % self.config.eval_interval == 0 {
+                if self.config.eval_interval > 0 && self.step.is_multiple_of(self.config.eval_interval) {
                     if let Some(should_stop) = self.evaluate_and_checkpoint()? {
                         if should_stop {
                             return Ok(());
@@ -1274,7 +1274,7 @@ impl DynamicCompoundTrainer {
             self.ema_controller.update();
 
             // Log coherence-driven alpha adjustment
-            if self.config.log_interval > 0 && self.step % (self.config.log_interval * 10) == 0 {
+            if self.config.log_interval > 0 && self.step.is_multiple_of(self.config.log_interval * 10) {
                 log::debug!(
                     "Coherence: {:.3} (C:{:.2}/M:{:.2}/Me:{:.2}) → α={:.3}",
                     coherence.score(),
@@ -1467,7 +1467,7 @@ impl DynamicCompoundTrainer {
         }
 
         // Save periodic checkpoint
-        if self.config.save_interval > 0 && self.step % self.config.save_interval == 0 {
+        if self.config.save_interval > 0 && self.step.is_multiple_of(self.config.save_interval) {
             self.save_checkpoint("latest")?;
         }
 

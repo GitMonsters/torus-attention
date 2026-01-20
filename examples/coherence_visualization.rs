@@ -131,8 +131,8 @@ fn main() -> TorusResult<()> {
         let focus_factor = 0.3 + (i as f64 * 0.1);
         let mut attn_data = vec![0.1f32; 64];
         // Make attention more concentrated over time
-        for j in 0..16 {
-            attn_data[j] = focus_factor as f32;
+        for item in attn_data.iter_mut().take(16) {
+            *item = focus_factor as f32;
         }
         // Normalize
         let sum: f32 = attn_data.iter().sum();
@@ -166,13 +166,15 @@ fn main() -> TorusResult<()> {
     println!("└─────────────────────────────────────────────────────────────────┘\n");
 
     // Create a small transformer for demonstration
-    let mut config = BidirectionalTorusConfig::default();
-    config.d_model = 64;
-    config.d_ff = 128;
-    config.n_layers = 2;
-    config.n_major = 8;
-    config.n_minor = 4;
-    config.use_coherence = true;
+    let config = BidirectionalTorusConfig {
+        d_model: 64,
+        d_ff: 128,
+        n_layers: 2,
+        n_major: 8,
+        n_minor: 4,
+        use_coherence: true,
+        ..Default::default()
+    };
 
     let varmap = VarMap::new();
     let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);

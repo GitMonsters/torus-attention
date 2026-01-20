@@ -382,7 +382,7 @@ impl ProcessingStream {
 /// Learnable weights for combining 8 streams
 #[derive(Debug)]
 pub struct StreamWeights {
-    /// Logits for stream weights [8]
+    /// Logits for stream weights `[8]`
     logits: Tensor,
     /// Temperature for softmax
     temperature: f64,
@@ -520,9 +520,9 @@ impl ParallelStreamProcessor {
 /// Symmetric stream pairing for bidirectional balance
 #[derive(Debug)]
 pub struct SymmetricStreamPairs {
-    /// Pair weights [4] for (major, minor, spiral, cross) pairs
+    /// Pair weights `[4]` for (major, minor, spiral, cross) pairs
     pair_logits: Tensor,
-    /// Within-pair balance [4] for forward vs backward within each pair
+    /// Within-pair balance `[4]` for forward vs backward within each pair
     balance_logits: Tensor,
     /// Temperature
     temperature: f64,

@@ -940,8 +940,10 @@ mod tests {
 
     #[test]
     fn test_config_without_coherence() {
-        let mut config = BidirectionalTorusConfig::default();
-        config.use_coherence = false;
+        let config = BidirectionalTorusConfig {
+            use_coherence: false,
+            ..Default::default()
+        };
         assert!(!config.use_coherence);
     }
 }

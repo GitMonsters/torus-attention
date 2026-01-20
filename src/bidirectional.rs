@@ -110,7 +110,7 @@ impl CausalMask {
 #[derive(Debug)]
 pub struct SymmetricCombiner {
     /// Learnable logits for forward/backward weighting
-    /// Shape: [2] where softmax([a, b]) gives [w_forward, w_backward]
+    /// Shape: `[2]` where softmax(`[a, b]`) gives `[w_forward, w_backward]`
     logits: Tensor,
     /// Temperature for softmax (lower = sharper distribution)
     temperature: f64,

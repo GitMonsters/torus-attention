@@ -647,19 +647,21 @@ mod mask_tests {
         let mut mask = vec![vec![0.0; n]; n];
 
         // Create lower triangular mask
-        for i in 0..n {
-            for j in 0..=i {
-                mask[i][j] = 1.0;
+        for (i, row) in mask.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                if j <= i {
+                    *cell = 1.0;
+                }
             }
         }
 
         // Verify structure
-        for i in 0..n {
-            for j in 0..n {
+        for (i, row) in mask.iter().enumerate() {
+            for (j, &cell) in row.iter().enumerate() {
                 if j <= i {
-                    assert_eq!(mask[i][j], 1.0);
+                    assert_eq!(cell, 1.0);
                 } else {
-                    assert_eq!(mask[i][j], 0.0);
+                    assert_eq!(cell, 0.0);
                 }
             }
         }
@@ -668,25 +670,24 @@ mod mask_tests {
     #[test]
     fn test_bidirectional_mask_symmetric() {
         // When combining forward and backward masks symmetrically
-        let n = 4;
-        let forward = vec![
-            vec![1.0, 0.0, 0.0, 0.0],
-            vec![1.0, 1.0, 0.0, 0.0],
-            vec![1.0, 1.0, 1.0, 0.0],
-            vec![1.0, 1.0, 1.0, 1.0],
+        let forward = [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
         ];
 
-        let backward = vec![
-            vec![1.0, 1.0, 1.0, 1.0],
-            vec![0.0, 1.0, 1.0, 1.0],
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![0.0, 0.0, 0.0, 1.0],
+        let backward = [
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
         ];
 
         // Combined should cover all positions
-        for i in 0..n {
-            for j in 0..n {
-                let combined = forward[i][j] + backward[i][j];
+        for (f_row, b_row) in forward.iter().zip(backward.iter()) {
+            for (&f, &b) in f_row.iter().zip(b_row.iter()) {
+                let combined = f + b;
                 assert!(combined >= 1.0, "Bidirectional should cover all positions");
             }
         }
@@ -698,9 +699,11 @@ mod mask_tests {
         let mut mask = vec![vec![0.0; n]; n];
 
         // Create lower triangular mask
-        for i in 0..n {
-            for j in 0..=i {
-                mask[i][j] = 1.0;
+        for (i, row) in mask.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                if j <= i {
+                    *cell = 1.0;
+                }
             }
         }
 
@@ -716,9 +719,9 @@ mod mask_tests {
         let mask = vec![vec![1.0; n]; n];
 
         // All positions should attend to all
-        for i in 0..n {
-            for j in 0..n {
-                assert_eq!(mask[i][j], 1.0);
+        for row in &mask {
+            for &cell in row {
+                assert_eq!(cell, 1.0);
             }
         }
     }
@@ -1432,7 +1435,7 @@ mod property_tests {
             let values: Vec<f32> = probs.to_vec1().unwrap();
 
             // All probabilities should be in [0, 1]
-            assert!(values.iter().all(|&p| p >= 0.0 && p <= 1.0));
+            assert!(values.iter().all(|&p| (0.0..=1.0).contains(&p)));
 
             // Should sum to 1
             let sum: f32 = values.iter().sum();

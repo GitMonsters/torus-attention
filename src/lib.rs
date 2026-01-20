@@ -44,6 +44,7 @@ pub mod error;
 pub mod bidirectional;
 pub mod parallel_streams;
 pub mod compounding;
+pub mod coherence;
 pub mod integration;
 
 // Training infrastructure
@@ -86,6 +87,13 @@ pub use compounding::{
     LearnableAlpha,
     CompoundingStats,
 };
+pub use coherence::{
+    SenseOfCoherence,
+    SharedMentalModel,
+    CoherenceConfig,
+    CognitiveCoherenceLayer,
+    CoherenceAware,
+};
 pub use integration::{
     BidirectionalTorusConfig,
     BidirectionalTorusLayer,
@@ -127,6 +135,12 @@ pub mod prelude {
         BidirectionalTorusTransformer,
         EMACompounding,
         CompoundingConfig,
+        
+        // Cognitive coherence types
+        SenseOfCoherence,
+        SharedMentalModel,
+        CognitiveCoherenceLayer,
+        CoherenceConfig,
         
         // Training types
         TrainingConfig,

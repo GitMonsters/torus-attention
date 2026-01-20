@@ -9,15 +9,15 @@
 //! - EMA Compounding
 //! - Full BidirectionalTorusTransformer
 
-use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
-use crate::geometry::{TorusCoordinate, TorusManifold, TorusDistanceMatrix};
-use crate::vortex::{Vortex, VortexDynamics, SpiralAttention};
-use crate::periodic::PeriodicBoundary;
 use crate::bidirectional::FlowDirection;
-use crate::parallel_streams::{StreamId, ParallelStreamConfig};
 use crate::compounding::{CompoundingConfig, CompoundingStats};
-use crate::integration::{BidirectionalTorusConfig, BidirectionalStats};
+use crate::geometry::{TorusCoordinate, TorusDistanceMatrix, TorusManifold};
+use crate::integration::{BidirectionalStats, BidirectionalTorusConfig};
+use crate::parallel_streams::{ParallelStreamConfig, StreamId};
+use crate::periodic::PeriodicBoundary;
+use crate::vortex::{SpiralAttention, Vortex, VortexDynamics};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use std::f64::consts::PI;
 
 /// Python wrapper for TorusCoordinate
@@ -59,7 +59,10 @@ impl PyTorusCoordinate {
     }
 
     fn __repr__(&self) -> String {
-        format!("TorusCoordinate(u={:.4}, v={:.4})", self.inner.u, self.inner.v)
+        format!(
+            "TorusCoordinate(u={:.4}, v={:.4})",
+            self.inner.u, self.inner.v
+        )
     }
 }
 
@@ -156,13 +159,7 @@ pub struct PyVortex {
 #[pymethods]
 impl PyVortex {
     #[new]
-    fn new(
-        u: f64,
-        v: f64,
-        circulation: f64,
-        winding_major: i32,
-        winding_minor: i32,
-    ) -> Self {
+    fn new(u: f64, v: f64, circulation: f64, winding_major: i32, winding_minor: i32) -> Self {
         Self {
             inner: Vortex::new(u, v, circulation, winding_major, winding_minor),
         }
@@ -406,7 +403,9 @@ impl PyFlowDirection {
     }
 
     fn flip(&self) -> Self {
-        Self { forward: !self.forward }
+        Self {
+            forward: !self.forward,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -432,28 +431,44 @@ pub struct PyStreamId {
 #[pymethods]
 impl PyStreamId {
     #[staticmethod]
-    fn major_forward() -> Self { Self { id: 0 } }
-    
+    fn major_forward() -> Self {
+        Self { id: 0 }
+    }
+
     #[staticmethod]
-    fn major_backward() -> Self { Self { id: 1 } }
-    
+    fn major_backward() -> Self {
+        Self { id: 1 }
+    }
+
     #[staticmethod]
-    fn minor_forward() -> Self { Self { id: 2 } }
-    
+    fn minor_forward() -> Self {
+        Self { id: 2 }
+    }
+
     #[staticmethod]
-    fn minor_backward() -> Self { Self { id: 3 } }
-    
+    fn minor_backward() -> Self {
+        Self { id: 3 }
+    }
+
     #[staticmethod]
-    fn spiral_cw() -> Self { Self { id: 4 } }
-    
+    fn spiral_cw() -> Self {
+        Self { id: 4 }
+    }
+
     #[staticmethod]
-    fn spiral_ccw() -> Self { Self { id: 5 } }
-    
+    fn spiral_ccw() -> Self {
+        Self { id: 5 }
+    }
+
     #[staticmethod]
-    fn cross_u_to_v() -> Self { Self { id: 6 } }
-    
+    fn cross_u_to_v() -> Self {
+        Self { id: 6 }
+    }
+
     #[staticmethod]
-    fn cross_v_to_u() -> Self { Self { id: 7 } }
+    fn cross_v_to_u() -> Self {
+        Self { id: 7 }
+    }
 
     #[staticmethod]
     fn all() -> Vec<PyStreamId> {
@@ -787,43 +802,69 @@ impl PyBidirectionalTorusConfig {
 
     // Getters
     #[getter]
-    fn d_model(&self) -> usize { self.inner.d_model }
-    
+    fn d_model(&self) -> usize {
+        self.inner.d_model
+    }
+
     #[getter]
-    fn d_ff(&self) -> usize { self.inner.d_ff }
-    
+    fn d_ff(&self) -> usize {
+        self.inner.d_ff
+    }
+
     #[getter]
-    fn n_heads(&self) -> usize { self.inner.n_heads }
-    
+    fn n_heads(&self) -> usize {
+        self.inner.n_heads
+    }
+
     #[getter]
-    fn n_layers(&self) -> usize { self.inner.n_layers }
-    
+    fn n_layers(&self) -> usize {
+        self.inner.n_layers
+    }
+
     #[getter]
-    fn n_major(&self) -> usize { self.inner.n_major }
-    
+    fn n_major(&self) -> usize {
+        self.inner.n_major
+    }
+
     #[getter]
-    fn n_minor(&self) -> usize { self.inner.n_minor }
-    
+    fn n_minor(&self) -> usize {
+        self.inner.n_minor
+    }
+
     #[getter]
-    fn major_radius(&self) -> f64 { self.inner.major_radius }
-    
+    fn major_radius(&self) -> f64 {
+        self.inner.major_radius
+    }
+
     #[getter]
-    fn minor_radius(&self) -> f64 { self.inner.minor_radius }
-    
+    fn minor_radius(&self) -> f64 {
+        self.inner.minor_radius
+    }
+
     #[getter]
-    fn use_parallel_streams(&self) -> bool { self.inner.use_parallel_streams }
-    
+    fn use_parallel_streams(&self) -> bool {
+        self.inner.use_parallel_streams
+    }
+
     #[getter]
-    fn use_compounding(&self) -> bool { self.inner.use_compounding }
-    
+    fn use_compounding(&self) -> bool {
+        self.inner.use_compounding
+    }
+
     #[getter]
-    fn ema_alpha(&self) -> f64 { self.inner.ema_alpha }
-    
+    fn ema_alpha(&self) -> f64 {
+        self.inner.ema_alpha
+    }
+
     #[getter]
-    fn learnable_alpha(&self) -> bool { self.inner.learnable_alpha }
-    
+    fn learnable_alpha(&self) -> bool {
+        self.inner.learnable_alpha
+    }
+
     #[getter]
-    fn spiral_winding(&self) -> f64 { self.inner.spiral_winding }
+    fn spiral_winding(&self) -> f64 {
+        self.inner.spiral_winding
+    }
 
     fn seq_len(&self) -> usize {
         self.inner.seq_len()
@@ -934,7 +975,7 @@ impl PyBidirectionalStats {
 
     fn summary(&self) -> String {
         let mut s = String::from("═══ Bidirectional Torus Stats ═══\n");
-        
+
         s.push_str("\n── Stream Weights ──\n");
         for (layer_idx, weights) in self.stream_weights.iter().enumerate() {
             s.push_str(&format!("Layer {}:\n", layer_idx));
@@ -984,7 +1025,7 @@ fn spiral_position(u: f64, v: f64, winding_number: f64) -> f64 {
 fn golden_spiral_positions(n_points: usize, start_phase: f64) -> Vec<PyTorusCoordinate> {
     let phi = 1.618033988749895; // Golden ratio
     let mut positions = Vec::with_capacity(n_points);
-    
+
     for i in 0..n_points {
         let t = i as f64 / n_points as f64;
         let u = (start_phase + 2.0 * PI * t) % (2.0 * PI);
@@ -993,7 +1034,7 @@ fn golden_spiral_positions(n_points: usize, start_phase: f64) -> Vec<PyTorusCoor
             inner: TorusCoordinate::new(u, v),
         });
     }
-    
+
     positions
 }
 
@@ -1048,7 +1089,7 @@ fn torus_attention(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyVortexDynamics>()?;
     m.add_class::<PySpiralAttention>()?;
     m.add_class::<PyPeriodicBoundary>()?;
-    
+
     // Bidirectional/parallel classes
     m.add_class::<PyFlowDirection>()?;
     m.add_class::<PyStreamId>()?;
@@ -1056,25 +1097,32 @@ fn torus_attention(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyCompoundingConfig>()?;
     m.add_class::<PyBidirectionalTorusConfig>()?;
     m.add_class::<PyBidirectionalStats>()?;
-    
+
     // Functions
     m.add_function(wrap_pyfunction!(compute_distance_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(distance_to_attention, m)?)?;
     m.add_function(wrap_pyfunction!(spiral_position, m)?)?;
     m.add_function(wrap_pyfunction!(golden_spiral_positions, m)?)?;
     m.add_function(wrap_pyfunction!(stream_mask_info, m)?)?;
-    
+
     // Constants
     m.add("PI", PI)?;
     m.add("TWO_PI", 2.0 * PI)?;
     m.add("GOLDEN_RATIO", 1.618033988749895)?;
     m.add("N_STREAMS", 8)?;
-    m.add("STREAM_NAMES", vec![
-        "major_forward", "major_backward",
-        "minor_forward", "minor_backward",
-        "spiral_cw", "spiral_ccw",
-        "cross_u_to_v", "cross_v_to_u",
-    ])?;
-    
+    m.add(
+        "STREAM_NAMES",
+        vec![
+            "major_forward",
+            "major_backward",
+            "minor_forward",
+            "minor_backward",
+            "spiral_cw",
+            "spiral_ccw",
+            "cross_u_to_v",
+            "cross_v_to_u",
+        ],
+    )?;
+
     Ok(())
 }

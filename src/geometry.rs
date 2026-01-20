@@ -186,7 +186,10 @@ impl TorusDistanceMatrix {
         self.distances
             .iter()
             .map(|row| {
-                let weights: Vec<f64> = row.iter().map(|&d| (d * d * neg_inv_2sigma2).exp()).collect();
+                let weights: Vec<f64> = row
+                    .iter()
+                    .map(|&d| (d * d * neg_inv_2sigma2).exp())
+                    .collect();
                 // Normalize (softmax-like)
                 let sum: f64 = weights.iter().sum();
                 weights.iter().map(|&w| w / sum).collect()

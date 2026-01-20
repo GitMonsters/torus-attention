@@ -1,7 +1,7 @@
 //! # Torus Attention Mechanism
-//! 
+//!
 //! A transformer-style attention mechanism built on a torus manifold,
-//! leveraging periodic boundary conditions, dual-loop (major/minor) 
+//! leveraging periodic boundary conditions, dual-loop (major/minor)
 //! information flow, and spiral (vortex) dynamics.
 //!
 //! ## Features
@@ -33,19 +33,19 @@
 //! ```
 
 // Core modules
-pub mod geometry;
 pub mod attention;
-pub mod vortex;
-pub mod periodic;
 pub mod dual_loop;
 pub mod error;
+pub mod geometry;
+pub mod periodic;
+pub mod vortex;
 
 // Bidirectional parallel processing modules
 pub mod bidirectional;
-pub mod parallel_streams;
-pub mod compounding;
 pub mod coherence;
+pub mod compounding;
 pub mod integration;
+pub mod parallel_streams;
 
 // Training infrastructure
 pub mod training;
@@ -58,59 +58,34 @@ mod tests;
 pub mod python;
 
 // Re-exports from core modules
-pub use geometry::{TorusCoordinate, TorusManifold, TorusDistanceMatrix};
 pub use attention::{TorusAttention, TorusAttentionConfig, TorusTransformer};
-pub use vortex::{Vortex, VortexDynamics, SpiralAttention, HelicalFlow};
-pub use periodic::{PeriodicBoundary, PeriodicAttentionMask};
-pub use dual_loop::{DualLoopFlow, DualLoopConfig, LoopAttention};
+pub use dual_loop::{DualLoopConfig, DualLoopFlow, LoopAttention};
 pub use error::TorusError;
+pub use geometry::{TorusCoordinate, TorusDistanceMatrix, TorusManifold};
+pub use periodic::{PeriodicAttentionMask, PeriodicBoundary};
+pub use vortex::{HelicalFlow, SpiralAttention, Vortex, VortexDynamics};
 
 // Re-exports from bidirectional modules
 pub use bidirectional::{
-    FlowDirection, 
-    BidirectionalAttention, 
-    SymmetricCombiner,
-    CausalMask,
+    BidirectionalAttention, CausalMask, FlowDirection, SymmetricCombiner,
     TorusBidirectionalEncoding,
 };
-pub use parallel_streams::{
-    StreamId,
-    ParallelStreamConfig,
-    ParallelStreamProcessor,
-    ProcessingStream,
-    StreamWeights,
+pub use coherence::{
+    CognitiveCoherenceLayer, CoherenceAware, CoherenceConfig, SenseOfCoherence, SharedMentalModel,
 };
 pub use compounding::{
-    CompoundingConfig,
-    EMACompounding,
-    MultiScaleCompounding,
-    LearnableAlpha,
-    CompoundingStats,
-};
-pub use coherence::{
-    SenseOfCoherence,
-    SharedMentalModel,
-    CoherenceConfig,
-    CognitiveCoherenceLayer,
-    CoherenceAware,
+    CompoundingConfig, CompoundingStats, EMACompounding, LearnableAlpha, MultiScaleCompounding,
 };
 pub use integration::{
-    BidirectionalTorusConfig,
-    BidirectionalTorusLayer,
-    BidirectionalTorusTransformer,
-    BidirectionalTorusInference,
-    BidirectionalStats,
-    CoherenceMetrics,
-    LayerOutput,
+    BidirectionalStats, BidirectionalTorusConfig, BidirectionalTorusInference,
+    BidirectionalTorusLayer, BidirectionalTorusTransformer, CoherenceMetrics, LayerOutput,
+};
+pub use parallel_streams::{
+    ParallelStreamConfig, ParallelStreamProcessor, ProcessingStream, StreamId, StreamWeights,
 };
 pub use training::{
-    TrainingConfig,
-    Trainer,
-    LRScheduler,
+    run_training_example, LRScheduler, LossType, TorusLoss, Trainer, TrainingConfig,
     TrainingMetrics,
-    TorusLoss,
-    LossType,
-    run_training_example,
 };
 
 /// Result type for torus operations
@@ -122,36 +97,36 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
-        // Core types
-        TorusCoordinate,
-        TorusManifold,
-        TorusAttention,
-        TorusAttentionConfig,
-        VortexDynamics,
-        PeriodicBoundary,
-        
-        // Bidirectional types
-        FlowDirection,
-        StreamId,
         BidirectionalTorusConfig,
         BidirectionalTorusTransformer,
-        EMACompounding,
+        CognitiveCoherenceLayer,
+        CoherenceConfig,
+
         CompoundingConfig,
-        
+
+        EMACompounding,
+        // Bidirectional types
+        FlowDirection,
+        LRScheduler,
+        PeriodicBoundary,
+
         // Cognitive coherence types
         SenseOfCoherence,
         SharedMentalModel,
-        CognitiveCoherenceLayer,
-        CoherenceConfig,
-        
-        // Training types
-        TrainingConfig,
-        Trainer,
-        LRScheduler,
-        TrainingMetrics,
-        
+        StreamId,
+        TorusAttention,
+        TorusAttentionConfig,
+        // Core types
+        TorusCoordinate,
+        TorusError,
+        TorusManifold,
         // Result type
         TorusResult,
-        TorusError,
+        Trainer,
+        // Training types
+        TrainingConfig,
+        TrainingMetrics,
+
+        VortexDynamics,
     };
 }

@@ -51,7 +51,10 @@ impl PeriodicBoundary {
     }
 
     /// Convert continuous coordinates to grid indices with interpolation weights
-    pub fn coord_to_grid(&self, coord: &TorusCoordinate) -> ((usize, usize), (usize, usize), f64, f64) {
+    pub fn coord_to_grid(
+        &self,
+        coord: &TorusCoordinate,
+    ) -> ((usize, usize), (usize, usize), f64, f64) {
         // Normalize to [0, 2π)
         let u = TorusCoordinate::wrap_angle(coord.u);
         let v = TorusCoordinate::wrap_angle(coord.v);
@@ -127,7 +130,11 @@ impl PeriodicBoundary {
 
     /// Generate periodic position encodings for the torus
     /// Uses both sin and cos for each frequency in both directions
-    pub fn position_encodings(&self, n_frequencies: usize, device: &Device) -> crate::TorusResult<Tensor> {
+    pub fn position_encodings(
+        &self,
+        n_frequencies: usize,
+        device: &Device,
+    ) -> crate::TorusResult<Tensor> {
         let total_positions = self.n_major * self.n_minor;
         let encoding_dim = 4 * n_frequencies; // sin/cos for both u and v directions
 
@@ -185,14 +192,14 @@ impl PeriodicBoundary {
     /// Shift tensor values with periodic wrapping
     pub fn periodic_shift(&self, grid: &Array2<f64>, shift_u: i64, shift_v: i64) -> Array2<f64> {
         let mut result = Array2::zeros((self.n_major, self.n_minor));
-        
+
         for i in 0..self.n_major {
             for j in 0..self.n_minor {
                 let (si, sj) = self.wrap_2d(i as i64 - shift_u, j as i64 - shift_v);
                 result[[i, j]] = grid[[si, sj]];
             }
         }
-        
+
         result
     }
 
@@ -243,7 +250,7 @@ impl PeriodicAttentionMask {
         for i in 0..boundary.n_major {
             for j in 0..boundary.n_minor {
                 let src_idx = i * boundary.n_minor + j;
-                
+
                 // Create window around (i, j) with periodic wrapping
                 for di in -(window_major as i64 / 2)..=(window_major as i64 / 2) {
                     for dj in -(window_minor as i64 / 2)..=(window_minor as i64 / 2) {
@@ -290,7 +297,7 @@ impl PeriodicAttentionMask {
 
                         // Periodic spiral distance
                         let spiral_dist = TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
-                        
+
                         if spiral_dist < bandwidth {
                             mask_data[src_idx * n + tgt_idx] = 1.0;
                         }
@@ -326,7 +333,7 @@ mod tests {
         let boundary = PeriodicBoundary::new(4, 4);
         let mut grid = Array2::zeros((4, 4));
         grid[[0, 0]] = 1.0;
-        
+
         let shifted = boundary.periodic_shift(&grid, 1, 0);
         assert!((shifted[[1, 0]] - 1.0).abs() < 1e-10);
     }
@@ -341,7 +348,7 @@ mod tests {
                 grid[[i, j]] = (i as f64 * boundary.du).sin();
             }
         }
-        
+
         let (grad_u, _) = boundary.gradient(&grid);
         // Gradient should be approximately cos
         let expected = (0.0_f64).cos();

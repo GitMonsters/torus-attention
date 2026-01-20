@@ -121,13 +121,19 @@ impl SymmetricCombiner {
     pub fn new(device: &Device, temperature: f64) -> TorusResult<Self> {
         // Initialize with equal logits (will give 0.5, 0.5 after softmax)
         let logits = Tensor::zeros((2,), DType::F32, device)?;
-        Ok(Self { logits, temperature })
+        Ok(Self {
+            logits,
+            temperature,
+        })
     }
 
     /// Create from VarBuilder for training
     pub fn from_vb(vb: VarBuilder, temperature: f64) -> TorusResult<Self> {
         let logits = vb.get((2,), "combiner_logits")?;
-        Ok(Self { logits, temperature })
+        Ok(Self {
+            logits,
+            temperature,
+        })
     }
 
     /// Get the current weights [w_forward, w_backward]
@@ -142,14 +148,14 @@ impl SymmetricCombiner {
     pub fn combine(&self, forward: &Tensor, backward: &Tensor) -> TorusResult<Tensor> {
         let scaled = (&self.logits / self.temperature)?;
         let weights = candle_nn::ops::softmax(&scaled, 0)?;
-        
+
         let w_forward = weights.i(0)?;
         let w_backward = weights.i(1)?;
 
         // weighted_sum = w_forward * forward + w_backward * backward
         let weighted_forward = forward.broadcast_mul(&w_forward)?;
         let weighted_backward = backward.broadcast_mul(&w_backward)?;
-        
+
         let combined = (weighted_forward + weighted_backward)?;
         Ok(combined)
     }
@@ -245,7 +251,7 @@ impl DirectionalAttention {
             .unsqueeze(0)?
             .unsqueeze(0)?
             .broadcast_as(scores.dims())?;
-        
+
         // Where mask is 0, set to large negative value
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
         let zeros = Tensor::zeros(scores.dims(), DType::F32, device)?;
@@ -259,9 +265,11 @@ impl DirectionalAttention {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back: [B, H, S, D/H] -> [B, S, D]
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
 
         // Output projection
         let output = self.output.forward(&attn_output)?;
@@ -373,7 +381,7 @@ impl BidirectionalPositionEncoding {
         device: &Device,
     ) -> TorusResult<Self> {
         let encoding_dim = d_model.min(4 * n_frequencies);
-        
+
         // Forward encodings (standard sinusoidal)
         let mut forward_data = vec![0.0f32; seq_len * encoding_dim];
         for pos in 0..seq_len {
@@ -397,8 +405,10 @@ impl BidirectionalPositionEncoding {
             }
         }
 
-        let forward_encodings = Tensor::from_vec(forward_data.clone(), (seq_len, encoding_dim), device)?;
-        let backward_encodings = Tensor::from_vec(backward_data.clone(), (seq_len, encoding_dim), device)?;
+        let forward_encodings =
+            Tensor::from_vec(forward_data.clone(), (seq_len, encoding_dim), device)?;
+        let backward_encodings =
+            Tensor::from_vec(backward_data.clone(), (seq_len, encoding_dim), device)?;
 
         // Combined: concatenate or add forward and backward
         // Using addition for dimension preservation
@@ -444,8 +454,10 @@ impl TorusBidirectionalEncoding {
         n_frequencies: usize,
         device: &Device,
     ) -> TorusResult<Self> {
-        let major = BidirectionalPositionEncoding::new(n_major, d_model / 2, n_frequencies, device)?;
-        let minor = BidirectionalPositionEncoding::new(n_minor, d_model / 2, n_frequencies, device)?;
+        let major =
+            BidirectionalPositionEncoding::new(n_major, d_model / 2, n_frequencies, device)?;
+        let minor =
+            BidirectionalPositionEncoding::new(n_minor, d_model / 2, n_frequencies, device)?;
 
         // Create 2D combined encoding by outer product-style combination
         let total_positions = n_major * n_minor;
@@ -506,16 +518,16 @@ mod tests {
         let mut mask = CausalMask::new(4, FlowDirection::Forward);
         let m = mask.get_mask(&device).unwrap();
         let data: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
-        
+
         // Forward mask should be lower triangular
         // [1, 0, 0, 0]
         // [1, 1, 0, 0]
         // [1, 1, 1, 0]
         // [1, 1, 1, 1]
-        assert_eq!(data[0], 1.0);  // [0,0]
-        assert_eq!(data[1], 0.0);  // [0,1]
-        assert_eq!(data[4], 1.0);  // [1,0]
-        assert_eq!(data[5], 1.0);  // [1,1]
+        assert_eq!(data[0], 1.0); // [0,0]
+        assert_eq!(data[1], 0.0); // [0,1]
+        assert_eq!(data[4], 1.0); // [1,0]
+        assert_eq!(data[5], 1.0); // [1,1]
         assert_eq!(data[15], 1.0); // [3,3]
     }
 
@@ -525,16 +537,16 @@ mod tests {
         let mut mask = CausalMask::new(4, FlowDirection::Backward);
         let m = mask.get_mask(&device).unwrap();
         let data: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
-        
+
         // Backward mask should be upper triangular
         // [1, 1, 1, 1]
         // [0, 1, 1, 1]
         // [0, 0, 1, 1]
         // [0, 0, 0, 1]
-        assert_eq!(data[0], 1.0);  // [0,0]
-        assert_eq!(data[3], 1.0);  // [0,3]
-        assert_eq!(data[4], 0.0);  // [1,0]
-        assert_eq!(data[5], 1.0);  // [1,1]
+        assert_eq!(data[0], 1.0); // [0,0]
+        assert_eq!(data[3], 1.0); // [0,3]
+        assert_eq!(data[4], 0.0); // [1,0]
+        assert_eq!(data[5], 1.0); // [1,1]
         assert_eq!(data[12], 0.0); // [3,0]
         assert_eq!(data[15], 1.0); // [3,3]
     }
@@ -544,7 +556,7 @@ mod tests {
         let device = Device::Cpu;
         let combiner = SymmetricCombiner::new(&device, 1.0).unwrap();
         let (w_f, w_b) = combiner.get_weights().unwrap();
-        
+
         // Initial weights should be equal (0.5, 0.5)
         assert!((w_f - 0.5).abs() < 0.01);
         assert!((w_b - 0.5).abs() < 0.01);

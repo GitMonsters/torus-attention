@@ -291,18 +291,11 @@ impl BidirectionalTorusLayer {
         vb: VarBuilder,
         device: &Device,
     ) -> TorusResult<Self> {
-        let parallel_streams = ParallelStreamProcessor::new(
-            config.to_parallel_config(),
-            vb.pp("parallel"),
-            device,
-        )?;
+        let parallel_streams =
+            ParallelStreamProcessor::new(config.to_parallel_config(), vb.pp("parallel"), device)?;
 
-        let feed_forward = TorusFeedForward::new(
-            config.d_model,
-            config.d_ff,
-            Activation::GELU,
-            vb.pp("ff"),
-        )?;
+        let feed_forward =
+            TorusFeedForward::new(config.d_model, config.d_ff, Activation::GELU, vb.pp("ff"))?;
 
         let pre_norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("pre_norm"))?;
         let post_attn_norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("post_attn_norm"))?;
@@ -467,9 +460,9 @@ impl BidirectionalTorusTransformer {
         device: &Device,
     ) -> TorusResult<Self> {
         // Optional embedding layer
-        let embedding = vocab_size.map(|vs| {
-            candle_nn::linear(vs, config.d_model, vb.pp("embedding"))
-        }).transpose()?;
+        let embedding = vocab_size
+            .map(|vs| candle_nn::linear(vs, config.d_model, vb.pp("embedding")))
+            .transpose()?;
 
         // Bidirectional position encodings
         let position_encodings = TorusBidirectionalEncoding::new(
@@ -559,7 +552,10 @@ impl BidirectionalTorusTransformer {
     }
 
     /// Compute geodesic distance bias matrix
-    fn compute_geodesic_bias(config: &BidirectionalTorusConfig, device: &Device) -> TorusResult<Tensor> {
+    fn compute_geodesic_bias(
+        config: &BidirectionalTorusConfig,
+        device: &Device,
+    ) -> TorusResult<Tensor> {
         let torus = TorusManifold::new(config.major_radius, config.minor_radius);
         let coords = torus.generate_grid(config.n_major, config.n_minor);
         let dist_matrix = TorusDistanceMatrix::from_coordinates(&coords);
@@ -591,7 +587,10 @@ impl BidirectionalTorusTransformer {
 
         // Add position encodings
         let pos_enc = self.position_encodings.get_2d();
-        let pos_enc_broadcast = pos_enc.unsqueeze(0)?.broadcast_as((batch_size, seq_len, self.config.d_model))?;
+        let pos_enc_broadcast =
+            pos_enc
+                .unsqueeze(0)?
+                .broadcast_as((batch_size, seq_len, self.config.d_model))?;
         h = (h + pos_enc_broadcast)?;
 
         // Process through layers with compounding and coherence
@@ -601,13 +600,15 @@ impl BidirectionalTorusTransformer {
             let mut layer_out = layer_output.output;
 
             // Update coherence if enabled and attention is available
-            if let (Some(ref mut coherence), Some(ref attention)) = (&mut self.coherence, &layer_output.attention) {
+            if let (Some(ref mut coherence), Some(ref attention)) =
+                (&mut self.coherence, &layer_output.attention)
+            {
                 // Update SOC from attention patterns
                 coherence.update_soc(attention, &layer_out)?;
-                
+
                 // Get adaptive alpha from coherence
                 let adaptive_alpha = coherence.compute_adaptive_alpha();
-                
+
                 // Apply coherence-modulated compounding
                 if let Some(ref mut comp) = self.compounding {
                     // Use coherence-adjusted alpha for this layer's compounding
@@ -651,10 +652,7 @@ impl BidirectionalTorusTransformer {
 
     /// Get stream weights for all layers
     pub fn get_all_stream_weights(&self) -> TorusResult<Vec<Vec<(StreamId, f32)>>> {
-        self.layers
-            .iter()
-            .map(|l| l.get_stream_weights())
-            .collect()
+        self.layers.iter().map(|l| l.get_stream_weights()).collect()
     }
 
     /// Get compounding alphas
@@ -817,7 +815,7 @@ impl BidirectionalStats {
     pub fn from_transformer(transformer: &BidirectionalTorusTransformer) -> TorusResult<Self> {
         let stream_weights = transformer.get_all_stream_weights()?;
         let compounding_alphas = transformer.get_compounding_alphas()?.unwrap_or_default();
-        
+
         let scale_weights = if let Some(ref multi) = transformer.multi_scale_compounding {
             Some(multi.get_scale_weights()?)
         } else {
@@ -850,7 +848,7 @@ impl BidirectionalStats {
     /// Print summary
     pub fn summary(&self) {
         println!("═══ Bidirectional Torus Stats ═══");
-        
+
         println!("\n── Stream Weights ──");
         for (layer_idx, weights) in self.stream_weights.iter().enumerate() {
             println!("Layer {}:", layer_idx);
@@ -868,7 +866,7 @@ impl BidirectionalStats {
 
         if let Some(ref scales) = self.scale_weights {
             println!("\n── Multi-Scale Weights ──");
-            println!("Fast:   {:.4}", scales.get(0).unwrap_or(&0.0));
+            println!("Fast:   {:.4}", scales.first().unwrap_or(&0.0));
             println!("Medium: {:.4}", scales.get(1).unwrap_or(&0.0));
             println!("Slow:   {:.4}", scales.get(2).unwrap_or(&0.0));
         }
@@ -882,7 +880,14 @@ impl BidirectionalStats {
             println!("Cognitive Cohesion: {:.4}", coh.cognitive_cohesion);
             println!("Adaptive Alpha:     {:.4}", coh.adaptive_alpha);
             println!("Coherence Trend:    {:+.4}", coh.coherence_trend);
-            println!("Status:             {}", if coh.is_coherent { "COHERENT" } else { "UNCERTAIN" });
+            println!(
+                "Status:             {}",
+                if coh.is_coherent {
+                    "COHERENT"
+                } else {
+                    "UNCERTAIN"
+                }
+            );
         }
     }
 }

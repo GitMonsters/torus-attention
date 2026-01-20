@@ -33,13 +33,7 @@ pub struct Vortex {
 
 impl Vortex {
     /// Create a new vortex
-    pub fn new(
-        u: f64,
-        v: f64,
-        circulation: f64,
-        winding_major: i32,
-        winding_minor: i32,
-    ) -> Self {
+    pub fn new(u: f64, v: f64, circulation: f64, winding_major: i32, winding_minor: i32) -> Self {
         Self {
             position: TorusCoordinate::new(u, v),
             circulation,
@@ -54,7 +48,7 @@ impl Vortex {
     pub fn velocity_at(&self, point: &TorusCoordinate) -> (f64, f64) {
         let du = TorusCoordinate::angular_distance(point.u, self.position.u);
         let dv = TorusCoordinate::angular_distance(point.v, self.position.v);
-        
+
         // Distance with core regularization
         let r2 = du * du + dv * dv + self.core_size * self.core_size;
         let _r = r2.sqrt();
@@ -69,10 +63,8 @@ impl Vortex {
 
     /// Evolve vortex position based on background flow
     pub fn advect(&mut self, vel_u: f64, vel_v: f64, dt: f64) {
-        self.position = TorusCoordinate::new(
-            self.position.u + vel_u * dt,
-            self.position.v + vel_v * dt,
-        );
+        self.position =
+            TorusCoordinate::new(self.position.u + vel_u * dt, self.position.v + vel_v * dt);
     }
 
     /// Get the spiral path traced by this vortex
@@ -83,10 +75,7 @@ impl Vortex {
         (0..n_points)
             .map(|i| {
                 let t = i as f64 * dt;
-                TorusCoordinate::new(
-                    self.position.u + t,
-                    self.position.v + winding * t,
-                )
+                TorusCoordinate::new(self.position.u + t, self.position.v + winding * t)
             })
             .collect()
     }
@@ -123,20 +112,10 @@ impl VortexDynamics {
 
     /// Create a vortex-antivortex pair (topologically neutral)
     pub fn add_vortex_pair(&mut self, u: f64, v: f64, separation: f64, circulation: f64) {
-        self.vortices.push(Vortex::new(
-            u - separation / 2.0,
-            v,
-            circulation,
-            0,
-            0,
-        ));
-        self.vortices.push(Vortex::new(
-            u + separation / 2.0,
-            v,
-            -circulation,
-            0,
-            0,
-        ));
+        self.vortices
+            .push(Vortex::new(u - separation / 2.0, v, circulation, 0, 0));
+        self.vortices
+            .push(Vortex::new(u + separation / 2.0, v, -circulation, 0, 0));
     }
 
     /// Compute total velocity field at a point from all vortices
@@ -186,10 +165,7 @@ impl VortexDynamics {
 
         for i in 0..n_major {
             for j in 0..n_minor {
-                let coord = TorusCoordinate::new(
-                    i as f64 * boundary.du,
-                    j as f64 * boundary.dv,
-                );
+                let coord = TorusCoordinate::new(i as f64 * boundary.du, j as f64 * boundary.dv);
                 let (vu, vv) = self.total_velocity(&coord);
                 vel_u[[i, j]] = vu;
                 vel_v[[i, j]] = vv;
@@ -203,7 +179,7 @@ impl VortexDynamics {
     pub fn vorticity_field(&self, n_major: usize, n_minor: usize) -> Array2<f64> {
         let boundary = PeriodicBoundary::new(n_major, n_minor);
         let (vel_u, vel_v) = self.velocity_field(n_major, n_minor);
-        
+
         let (_, grad_u_v) = boundary.gradient(&vel_u);
         let (grad_v_u, _) = boundary.gradient(&vel_v);
 
@@ -228,7 +204,9 @@ impl VortexDynamics {
         // Interaction energy
         for i in 0..self.vortices.len() {
             for j in (i + 1)..self.vortices.len() {
-                let d = self.vortices[i].position.geodesic_distance(&self.vortices[j].position);
+                let d = self.vortices[i]
+                    .position
+                    .geodesic_distance(&self.vortices[j].position);
                 let d_reg = d.max(0.01);
                 energy += self.vortices[i].circulation * self.vortices[j].circulation * d_reg.ln();
             }
@@ -294,11 +272,11 @@ impl SpiralAttention {
                         let mut min_dist = f64::MAX;
                         for arm in 0..self.n_arms {
                             let arm_offset = 2.0 * PI * arm as f64 / self.n_arms as f64;
-                            
+
                             // Spiral phase for source and target
                             let spiral_src = u_src + self.winding * v_src + arm_offset;
                             let spiral_tgt = u_tgt + self.winding * v_tgt + arm_offset;
-                            
+
                             let dist = TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
                             min_dist = min_dist.min(dist);
                         }
@@ -361,19 +339,21 @@ impl HelicalFlow {
     /// Map sequence position to torus coordinates via helix
     pub fn sequence_to_torus(&self, seq_idx: usize, seq_len: usize) -> TorusCoordinate {
         let t = 2.0 * PI * seq_idx as f64 / seq_len as f64;
-        TorusCoordinate::new(
-            t,
-            self.handedness * t * self.pitch,
-        )
+        TorusCoordinate::new(t, self.handedness * t * self.pitch)
     }
 
     /// Generate helical position encodings
-    pub fn position_encodings(&self, seq_len: usize, d_model: usize, device: &Device) -> TorusResult<Tensor> {
+    pub fn position_encodings(
+        &self,
+        seq_len: usize,
+        d_model: usize,
+        device: &Device,
+    ) -> TorusResult<Tensor> {
         let mut encodings = vec![0.0f32; seq_len * d_model];
 
         for i in 0..seq_len {
             let coord = self.sequence_to_torus(i, seq_len);
-            
+
             for d in 0..d_model {
                 let freq = (d / 2 + 1) as f64;
                 let val = if d % 2 == 0 {
@@ -492,7 +472,8 @@ impl DirectionalSpiral {
 
                         if can_attend {
                             // Distance along spiral
-                            let spiral_dist = TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
+                            let spiral_dist =
+                                TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
                             let weight = (spiral_dist * spiral_dist * neg_inv_2bw2).exp();
                             weights[src_idx * n + tgt_idx] = weight as f32;
                         }
@@ -519,7 +500,7 @@ impl DirectionalSpiral {
     pub fn sample_positions(&self, n_points: usize, start_phase: f64) -> Vec<TorusCoordinate> {
         let direction_mult = self.direction.sign();
         let dt = direction_mult * 2.0 * PI / n_points as f64;
-        
+
         (0..n_points)
             .map(|i| {
                 let t = i as f64 * dt + start_phase;
@@ -543,7 +524,12 @@ impl BidirectionalSpiral {
     pub fn new(winding: f64, bandwidth: f64, n_arms: usize) -> Self {
         Self {
             cw: DirectionalSpiral::new(winding, bandwidth, n_arms, SpiralDirection::Clockwise),
-            ccw: DirectionalSpiral::new(winding, bandwidth, n_arms, SpiralDirection::CounterClockwise),
+            ccw: DirectionalSpiral::new(
+                winding,
+                bandwidth,
+                n_arms,
+                SpiralDirection::CounterClockwise,
+            ),
         }
     }
 
@@ -561,7 +547,9 @@ impl BidirectionalSpiral {
         device: &Device,
     ) -> TorusResult<(Tensor, Tensor)> {
         let cw_weights = self.cw.causal_attention_weights(n_major, n_minor, device)?;
-        let ccw_weights = self.ccw.causal_attention_weights(n_major, n_minor, device)?;
+        let ccw_weights = self
+            .ccw
+            .causal_attention_weights(n_major, n_minor, device)?;
         Ok((cw_weights, ccw_weights))
     }
 
@@ -711,11 +699,19 @@ mod tests {
         let vortex = Vortex::new(0.0, 0.0, 1.0, 0, 0);
         let point = TorusCoordinate::new(0.5, 0.0);
         let (vu, vv) = vortex.velocity_at(&point);
-        
+
         // Velocity should be perpendicular to displacement
         // Since displacement is in u-direction, velocity should be in v-direction
-        assert!(vu.abs() < 0.01, "u-component should be near zero, got {}", vu);
-        assert!(vv.abs() > 0.01, "v-component should be non-zero, got {}", vv);
+        assert!(
+            vu.abs() < 0.01,
+            "u-component should be near zero, got {}",
+            vu
+        );
+        assert!(
+            vv.abs() > 0.01,
+            "v-component should be non-zero, got {}",
+            vv
+        );
     }
 
     #[test]
@@ -723,11 +719,11 @@ mod tests {
         let manifold = TorusManifold::unit();
         let mut dynamics = VortexDynamics::new(manifold, 0.01);
         dynamics.add_vortex_pair(PI, PI, 0.5, 1.0);
-        
+
         let initial_circ = dynamics.total_circulation();
         dynamics.run(100);
         let final_circ = dynamics.total_circulation();
-        
+
         // Total circulation should be conserved (zero for vortex pair)
         assert!((initial_circ - final_circ).abs() < 1e-10);
         assert!(initial_circ.abs() < 1e-10);
@@ -745,7 +741,7 @@ mod tests {
         let path: Vec<TorusCoordinate> = (0..100)
             .map(|i| TorusCoordinate::new(2.0 * PI * i as f64 / 100.0, 0.0))
             .collect();
-        
+
         let (winding_major, winding_minor) = TopologicalCharge::winding_number(&path);
         assert_eq!(winding_major, 1);
         assert_eq!(winding_minor, 0);

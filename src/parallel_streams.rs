@@ -259,7 +259,8 @@ impl ProcessingStream {
 
                                 if can_attend {
                                     // Distance-based falloff along spiral
-                                    let dist = TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
+                                    let dist =
+                                        TorusCoordinate::angular_distance(spiral_src, spiral_tgt);
                                     let weight = (-dist * dist / 2.0).exp();
                                     mask[src_idx * n + tgt_idx] = weight as f32;
                                 }
@@ -271,23 +272,23 @@ impl ProcessingStream {
             StreamId::CrossUtoV | StreamId::CrossVtoU => {
                 // Cross-loop coupling attention
                 let is_u_to_v = id == StreamId::CrossUtoV;
-                
+
                 for i in 0..config.n_major {
                     for j in 0..config.n_minor {
                         let src_idx = i * config.n_minor + j;
-                        
+
                         for ti in 0..config.n_major {
                             for tj in 0..config.n_minor {
                                 let tgt_idx = ti * config.n_minor + tj;
-                                
+
                                 // Cross attention: position in one dimension affects the other
                                 let di = (i as i64 - ti as i64).abs() as f64;
                                 let dj = (j as i64 - tj as i64).abs() as f64;
-                                
+
                                 // Wrap-aware distance
                                 let di = di.min(config.n_major as f64 - di);
                                 let dj = dj.min(config.n_minor as f64 - dj);
-                                
+
                                 // Cross coupling: influence decays with distance in source dim,
                                 // but is broader in target dim
                                 let weight = if is_u_to_v {
@@ -299,7 +300,7 @@ impl ProcessingStream {
                                     (-dj * dj / (config.n_minor as f64)).exp()
                                         * (-di * di / (2.0 * config.n_major as f64)).exp()
                                 };
-                                
+
                                 mask[src_idx * n + tgt_idx] = weight as f32;
                             }
                         }
@@ -347,11 +348,12 @@ impl ProcessingStream {
         let scores = (scores * self.scale)?;
 
         // Apply stream-specific mask
-        let mask_broadcast = self.attention_mask
+        let mask_broadcast = self
+            .attention_mask
             .unsqueeze(0)?
             .unsqueeze(0)?
             .broadcast_as(scores.dims())?;
-        
+
         // Multiply scores by mask (soft masking)
         let scores = (scores * mask_broadcast)?;
 
@@ -362,9 +364,11 @@ impl ProcessingStream {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
 
         // Output projection
         Ok(self.output.forward(&attn_output)?)
@@ -384,13 +388,19 @@ impl StreamWeights {
     /// Create uniform initial weights
     pub fn new(device: &Device, temperature: f64) -> TorusResult<Self> {
         let logits = Tensor::zeros((8,), DType::F32, device)?;
-        Ok(Self { logits, temperature })
+        Ok(Self {
+            logits,
+            temperature,
+        })
     }
 
     /// Create from VarBuilder
     pub fn from_vb(vb: VarBuilder, temperature: f64) -> TorusResult<Self> {
         let logits = vb.get((8,), "stream_weights")?;
-        Ok(Self { logits, temperature })
+        Ok(Self {
+            logits,
+            temperature,
+        })
     }
 
     /// Get normalized weights
@@ -439,14 +449,9 @@ pub struct ParallelStreamProcessor {
 impl ParallelStreamProcessor {
     pub fn new(config: ParallelStreamConfig, vb: VarBuilder, device: &Device) -> TorusResult<Self> {
         let mut streams = Vec::with_capacity(8);
-        
+
         for id in StreamId::all() {
-            let stream = ProcessingStream::new(
-                id,
-                &config,
-                vb.pp(id.name()),
-                device,
-            )?;
+            let stream = ProcessingStream::new(id, &config, vb.pp(id.name()), device)?;
             streams.push(stream);
         }
 
@@ -606,7 +611,7 @@ mod tests {
         let device = Device::Cpu;
         let weights = StreamWeights::new(&device, 1.0).unwrap();
         let w = weights.get_weights().unwrap();
-        
+
         // Should be uniform (1/8 each)
         assert_eq!(w.len(), 8);
         for &wi in &w {

@@ -142,14 +142,17 @@ impl TorusAttention {
     }
 
     /// Compute geodesic distance-based attention bias
-    fn compute_geodesic_bias(config: &TorusAttentionConfig, device: &Device) -> TorusResult<Tensor> {
+    fn compute_geodesic_bias(
+        config: &TorusAttentionConfig,
+        device: &Device,
+    ) -> TorusResult<Tensor> {
         let torus = TorusManifold::new(config.major_radius, config.minor_radius);
         let coords = torus.generate_grid(config.n_major, config.n_minor);
         let distance_matrix = TorusDistanceMatrix::from_coordinates(&coords);
-        
+
         let n = config.n_major * config.n_minor;
         let neg_inv_2sigma2 = -0.5 / (config.attention_sigma * config.attention_sigma);
-        
+
         let mut bias_data = vec![0.0f32; n * n];
         for i in 0..n {
             for j in 0..n {
@@ -169,11 +172,15 @@ impl TorusAttention {
         let head_dim = d_model / n_heads;
 
         // Add position encodings
-        let _pos_enc = self.position_encodings.broadcast_as((batch_size, seq_len, self.position_encodings.dims()[1]))?;
-        
+        let _pos_enc = self.position_encodings.broadcast_as((
+            batch_size,
+            seq_len,
+            self.position_encodings.dims()[1],
+        ))?;
+
         // If position encoding dimension differs from d_model, we need to project or slice
         // For simplicity, we'll add after projecting x to include spatial information
-        
+
         // Project Q, K, V
         let q = self.query.forward(x)?;
         let k = self.key.forward(x)?;
@@ -261,7 +268,12 @@ pub enum Activation {
 }
 
 impl TorusFeedForward {
-    pub fn new(d_model: usize, d_ff: usize, activation: Activation, vb: VarBuilder) -> TorusResult<Self> {
+    pub fn new(
+        d_model: usize,
+        d_ff: usize,
+        activation: Activation,
+        vb: VarBuilder,
+    ) -> TorusResult<Self> {
         let linear1 = candle_nn::linear(d_model, d_ff, vb.pp("linear1"))?;
         let linear2 = candle_nn::linear(d_ff, d_model, vb.pp("linear2"))?;
         let norm = candle_nn::layer_norm(d_model, 1e-5, vb.pp("norm"))?;
@@ -276,7 +288,7 @@ impl TorusFeedForward {
 
     pub fn forward(&self, x: &Tensor) -> TorusResult<Tensor> {
         let h = self.linear1.forward(x)?;
-        
+
         let h = match self.activation {
             Activation::ReLU => h.relu()?,
             Activation::GELU => h.gelu_erf()?,
@@ -297,14 +309,15 @@ pub struct TorusTransformerBlock {
 }
 
 impl TorusTransformerBlock {
-    pub fn new(config: TorusAttentionConfig, d_ff: usize, vb: VarBuilder, device: &Device) -> TorusResult<Self> {
+    pub fn new(
+        config: TorusAttentionConfig,
+        d_ff: usize,
+        vb: VarBuilder,
+        device: &Device,
+    ) -> TorusResult<Self> {
         let attention = TorusAttention::new(config.clone(), vb.pp("attention"), device)?;
-        let feed_forward = TorusFeedForward::new(
-            config.d_model,
-            d_ff,
-            Activation::GELU,
-            vb.pp("ff"),
-        )?;
+        let feed_forward =
+            TorusFeedForward::new(config.d_model, d_ff, Activation::GELU, vb.pp("ff"))?;
 
         Ok(Self {
             attention,

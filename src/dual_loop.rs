@@ -133,9 +133,11 @@ impl LoopAttention {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back: [B, H, S, D] -> [B, S, H*D]
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
 
         // Output projection
         let output = self.output.forward(&attn_output)?;
@@ -143,21 +145,26 @@ impl LoopAttention {
     }
 
     /// Generate periodic position bias for ring attention
-    pub fn periodic_position_bias(loop_size: usize, n_heads: usize, device: &Device) -> TorusResult<Tensor> {
+    pub fn periodic_position_bias(
+        loop_size: usize,
+        n_heads: usize,
+        device: &Device,
+    ) -> TorusResult<Tensor> {
         let mut bias = vec![0.0f32; n_heads * loop_size * loop_size];
 
         for h in 0..n_heads {
             let bandwidth = (h + 1) as f64 * PI / n_heads as f64;
-            
+
             for i in 0..loop_size {
                 for j in 0..loop_size {
                     // Periodic distance on the ring
                     let di = (i as i64 - j as i64).abs() as f64;
                     let periodic_dist = di.min(loop_size as f64 - di);
                     let normalized_dist = periodic_dist * 2.0 * PI / loop_size as f64;
-                    
+
                     // Gaussian falloff with head-specific bandwidth
-                    let bias_val = (-normalized_dist * normalized_dist / (2.0 * bandwidth * bandwidth)).exp();
+                    let bias_val =
+                        (-normalized_dist * normalized_dist / (2.0 * bandwidth * bandwidth)).exp();
                     bias[h * loop_size * loop_size + i * loop_size + j] = bias_val as f32;
                 }
             }
@@ -233,7 +240,7 @@ impl DualLoopFlow {
     /// Input shape: [batch, n_major * n_minor, d_model]
     pub fn forward(&self, x: &Tensor, device: &Device) -> TorusResult<Tensor> {
         let (batch_size, seq_len, d_model) = x.dims3()?;
-        
+
         // Reshape to grid: [batch, n_major, n_minor, d_model]
         let x_grid = x.reshape((
             batch_size,
@@ -270,12 +277,22 @@ impl DualLoopFlow {
         // Broadcast major attention back to grid
         let major_expanded = major_out
             .unsqueeze(2)? // [batch, n_major, 1, d_model]
-            .broadcast_as((batch_size, self.config.n_major, self.config.n_minor, d_model))?;
+            .broadcast_as((
+                batch_size,
+                self.config.n_major,
+                self.config.n_minor,
+                d_model,
+            ))?;
 
         // Broadcast minor attention back to grid
         let minor_expanded = minor_out
             .unsqueeze(1)? // [batch, 1, n_minor, d_model]
-            .broadcast_as((batch_size, self.config.n_major, self.config.n_minor, d_model))?;
+            .broadcast_as((
+                batch_size,
+                self.config.n_major,
+                self.config.n_minor,
+                d_model,
+            ))?;
 
         // Combine: element-wise addition of contributions
         let combined = (x_grid + major_expanded + minor_expanded)?;
@@ -371,7 +388,7 @@ mod tests {
         let major_weights = Array2::eye(4);
         let minor_weights = Array2::eye(4);
         let flow = FlowPattern::from_attention_weights(&major_weights, &minor_weights, 4, 4);
-        
+
         // Identity weights should produce minimal flow
         let (fu, fv) = flow.flow_at(2, 2);
         assert!(fu.abs() < 1.1); // Reasonable bounds

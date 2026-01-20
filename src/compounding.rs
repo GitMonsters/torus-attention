@@ -119,7 +119,12 @@ pub struct LearnableAlpha {
 
 impl LearnableAlpha {
     /// Create with initial alpha value
-    pub fn new(initial_alpha: f64, min_alpha: f64, max_alpha: f64, device: &Device) -> TorusResult<Self> {
+    pub fn new(
+        initial_alpha: f64,
+        min_alpha: f64,
+        max_alpha: f64,
+        device: &Device,
+    ) -> TorusResult<Self> {
         // Clamp initial_alpha to valid range
         let clamped_alpha = initial_alpha.clamp(min_alpha, max_alpha);
         // Inverse sigmoid to get raw value from desired alpha
@@ -128,7 +133,7 @@ impl LearnableAlpha {
         let normalized = normalized.clamp(0.001, 0.999);
         let raw_value = (normalized / (1.0 - normalized)).ln();
         let raw = Tensor::new(&[raw_value as f32], device)?;
-        
+
         Ok(Self {
             raw,
             min_alpha,
@@ -189,12 +194,12 @@ impl EMACompounding {
     /// Create new EMA compounding module
     pub fn new(config: CompoundingConfig, vb: VarBuilder, device: &Device) -> TorusResult<Self> {
         let mut alphas = Vec::with_capacity(config.n_layers);
-        
+
         for l in 0..config.n_layers {
             // Initial alpha with layer-wise scaling
             let layer_alpha = config.base_alpha * config.layer_scale.powi(l as i32);
             let layer_alpha = layer_alpha.clamp(config.min_alpha, config.max_alpha);
-            
+
             let alpha = if config.learnable_alpha {
                 LearnableAlpha::from_vb(
                     vb.pp(format!("layer_{}_alpha", l)),
@@ -211,11 +216,7 @@ impl EMACompounding {
         let momentum_betas = if config.use_momentum && config.learnable_alpha {
             let mut betas = Vec::with_capacity(config.n_layers);
             for l in 0..config.n_layers {
-                let beta = LearnableAlpha::from_vb(
-                    vb.pp(format!("layer_{}_beta", l)),
-                    0.5,
-                    0.999,
-                )?;
+                let beta = LearnableAlpha::from_vb(vb.pp(format!("layer_{}_beta", l)), 0.5, 0.999)?;
                 betas.push(beta);
             }
             Some(betas)
@@ -263,7 +264,7 @@ impl EMACompounding {
         let one_minus_alpha = 1.0 - alpha.to_vec1::<f32>()?[0] as f64;
 
         let state = self.states[layer].as_mut().unwrap();
-        
+
         let h_new = if self.config.use_momentum {
             // Momentum-enhanced EMA
             let beta = if let Some(ref betas) = self.momentum_betas {
@@ -276,11 +277,11 @@ impl EMACompounding {
             let diff = (new_value - &state.hidden)?;
             let vel = state.velocity.as_ref().unwrap();
             let new_velocity = ((vel * beta)? + (&diff * (1.0 - beta))?)?;
-            
+
             // Update hidden with momentum: h_t = h_{t-1} + α * v_t
             let alpha_val = alpha.to_vec1::<f32>()?[0] as f64;
             let h = (&state.hidden + (&new_velocity * alpha_val)?)?;
-            
+
             state.velocity = Some(new_velocity);
             h
         } else {
@@ -297,10 +298,15 @@ impl EMACompounding {
     }
 
     /// Apply EMA compounding with an externally-provided alpha value
-    /// 
+    ///
     /// This is used for coherence-modulated compounding where the alpha
     /// is dynamically adjusted based on coherence metrics (SOC/SMM).
-    pub fn compound_with_alpha(&mut self, layer: usize, new_value: &Tensor, external_alpha: f64) -> TorusResult<Tensor> {
+    pub fn compound_with_alpha(
+        &mut self,
+        layer: usize,
+        new_value: &Tensor,
+        external_alpha: f64,
+    ) -> TorusResult<Tensor> {
         if layer >= self.config.n_layers {
             return Err(TorusError::InvalidParameter(format!(
                 "Layer {} exceeds configured layers {}",
@@ -316,7 +322,7 @@ impl EMACompounding {
         let one_minus_alpha = 1.0 - alpha;
 
         let state = self.states[layer].as_mut().unwrap();
-        
+
         let h_new = if self.config.use_momentum {
             // Momentum-enhanced EMA with external alpha
             let beta = if let Some(ref betas) = self.momentum_betas {
@@ -329,10 +335,10 @@ impl EMACompounding {
             let diff = (new_value - &state.hidden)?;
             let vel = state.velocity.as_ref().unwrap();
             let new_velocity = ((vel * beta)? + (&diff * (1.0 - beta))?)?;
-            
+
             // Update hidden with momentum: h_t = h_{t-1} + α * v_t
             let h = (&state.hidden + (&new_velocity * alpha)?)?;
-            
+
             state.velocity = Some(new_velocity);
             h
         } else {
@@ -351,10 +357,10 @@ impl EMACompounding {
     /// Compound with bias correction (Adam-style)
     pub fn compound_corrected(&mut self, layer: usize, new_value: &Tensor) -> TorusResult<Tensor> {
         let h = self.compound(layer, new_value)?;
-        
+
         let state = self.states[layer].as_ref().unwrap();
         let t = state.step_count as f64;
-        
+
         if t > 0.0 {
             let alpha = self.alphas[layer].get()?;
             // Bias correction: h_corrected = h / (1 - α^t)
@@ -363,16 +369,14 @@ impl EMACompounding {
                 return Ok((h / correction)?);
             }
         }
-        
+
         Ok(h)
     }
 
     /// Reset all states
     pub fn reset(&mut self) -> TorusResult<()> {
-        for state in &mut self.states {
-            if let Some(ref mut s) = state {
-                s.reset(&self.device)?;
-            }
+        for state in self.states.iter_mut().flatten() {
+            state.reset(&self.device)?;
         }
         Ok(())
     }
@@ -426,7 +430,11 @@ pub struct MultiScaleCompounding {
 }
 
 impl MultiScaleCompounding {
-    pub fn new(base_config: CompoundingConfig, vb: VarBuilder, device: &Device) -> TorusResult<Self> {
+    pub fn new(
+        base_config: CompoundingConfig,
+        vb: VarBuilder,
+        device: &Device,
+    ) -> TorusResult<Self> {
         // Fast scale: high alpha (0.95)
         let mut fast_config = base_config.clone();
         fast_config.base_alpha = 0.95;
@@ -467,7 +475,7 @@ impl MultiScaleCompounding {
 
         // Weighted combination
         let weights = candle_nn::ops::softmax(&(&self.scale_weights / self.temperature)?, 0)?;
-        
+
         let combined = (h_fast.broadcast_mul(&weights.i(0)?)?
             + h_medium.broadcast_mul(&weights.i(1)?)?
             + h_slow.broadcast_mul(&weights.i(2)?)?)?;
@@ -518,11 +526,11 @@ impl CompoundingStats {
         if let Some(state) = compounding.get_state(layer) {
             let hidden_flat: Vec<f32> = state.hidden().flatten_all()?.to_vec1()?;
             let n = hidden_flat.len() as f64;
-            
+
             // Update running mean
             let mean: f64 = hidden_flat.iter().map(|&x| x as f64).sum::<f64>() / n;
             self.mean_hidden[layer] = mean;
-            
+
             // Update running variance
             let var: f64 = hidden_flat
                 .iter()
@@ -533,14 +541,14 @@ impl CompoundingStats {
                 .sum::<f64>()
                 / n;
             self.var_hidden[layer] = var;
-            
+
             self.steps[layer] = state.steps();
         }
-        
+
         // Track alpha
         let alpha = compounding.get_alpha(layer)?;
         self.alpha_history[layer].push(alpha);
-        
+
         Ok(())
     }
 
@@ -572,12 +580,12 @@ mod tests {
     #[test]
     fn test_alpha_constraints() {
         let device = Device::Cpu;
-        
+
         // Test that alpha stays within bounds
         let alpha_low = LearnableAlpha::new(0.05, 0.1, 0.99, &device).unwrap();
         let value_low = alpha_low.get().unwrap();
         assert!(value_low >= 0.1);
-        
+
         let alpha_high = LearnableAlpha::new(1.0, 0.1, 0.99, &device).unwrap();
         let value_high = alpha_high.get().unwrap();
         assert!(value_high <= 0.99);

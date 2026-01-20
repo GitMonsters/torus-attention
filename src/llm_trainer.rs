@@ -193,7 +193,9 @@ impl LLMTrainer {
                 self.step += 1;
 
                 // Logging
-                if self.config.log_interval > 0 && self.step.is_multiple_of(self.config.log_interval) {
+                if self.config.log_interval > 0
+                    && self.step.is_multiple_of(self.config.log_interval)
+                {
                     let avg_loss = epoch_loss / epoch_batches as f64;
                     let lr = self.get_learning_rate();
                     log::info!(
@@ -205,7 +207,9 @@ impl LLMTrainer {
                 }
 
                 // Validation
-                if self.config.eval_interval > 0 && self.step.is_multiple_of(self.config.eval_interval) {
+                if self.config.eval_interval > 0
+                    && self.step.is_multiple_of(self.config.eval_interval)
+                {
                     if let Some(ref val_data) = self.val_data {
                         let val_loss = self.evaluate(val_data)?;
                         log::info!("Step {} | Val Loss: {:.4}", self.step, val_loss);
@@ -230,7 +234,9 @@ impl LLMTrainer {
                 }
 
                 // Checkpointing
-                if self.config.save_interval > 0 && self.step.is_multiple_of(self.config.save_interval) {
+                if self.config.save_interval > 0
+                    && self.step.is_multiple_of(self.config.save_interval)
+                {
                     self.save_checkpoint("latest")?;
                 }
 

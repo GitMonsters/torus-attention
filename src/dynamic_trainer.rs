@@ -1111,7 +1111,9 @@ impl DynamicCompoundTrainer {
                 self.apply_dynamic_adjustments(loss)?;
 
                 // Logging
-                if self.config.log_interval > 0 && self.step.is_multiple_of(self.config.log_interval) {
+                if self.config.log_interval > 0
+                    && self.step.is_multiple_of(self.config.log_interval)
+                {
                     self.log_progress(epoch_loss / epoch_batches as f64, grad_norm);
 
                     // Log to tensorboard if enabled
@@ -1119,7 +1121,9 @@ impl DynamicCompoundTrainer {
                 }
 
                 // Validation
-                if self.config.eval_interval > 0 && self.step.is_multiple_of(self.config.eval_interval) {
+                if self.config.eval_interval > 0
+                    && self.step.is_multiple_of(self.config.eval_interval)
+                {
                     if let Some(should_stop) = self.evaluate_and_checkpoint()? {
                         if should_stop {
                             return Ok(());
@@ -1274,7 +1278,9 @@ impl DynamicCompoundTrainer {
             self.ema_controller.update();
 
             // Log coherence-driven alpha adjustment
-            if self.config.log_interval > 0 && self.step.is_multiple_of(self.config.log_interval * 10) {
+            if self.config.log_interval > 0
+                && self.step.is_multiple_of(self.config.log_interval * 10)
+            {
                 log::debug!(
                     "Coherence: {:.3} (C:{:.2}/M:{:.2}/Me:{:.2}) → α={:.3}",
                     coherence.score(),

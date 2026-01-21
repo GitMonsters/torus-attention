@@ -43,6 +43,9 @@ pub mod vortex;
 // CERN Hadron Collider-inspired validator module
 pub mod collider;
 
+// Knowledge distillation (silent teacher)
+pub mod distillation;
+
 // Bidirectional parallel processing modules
 pub mod bidirectional;
 pub mod coherence;
@@ -132,6 +135,12 @@ pub use collider::{
     AnomalyEvent, AnomalyMonitor, AnomalyThresholds, AnomalyType, ColliderConfig, ColliderMetrics,
     ColliderReport, ConservationValidator, DarknessTracker, FourMomentum, Particle, ParticleBeam,
     ParticleFlavor, TorusCollider, TorusColliderDetector,
+};
+
+// Distillation exports (knowledge distillation with silent teacher)
+pub use distillation::{
+    DistillationConfig, DistillationStepResult, DistillationTrainer, TeacherModel,
+    DistillationCheckpointMetadata, load_transformer_checkpoint, save_transformer_checkpoint,
 };
 
 /// Result type for torus operations

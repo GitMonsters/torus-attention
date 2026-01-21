@@ -704,6 +704,45 @@ impl BidirectionalTorusTransformer {
     pub fn position_encodings(&self) -> &TorusBidirectionalEncoding {
         &self.position_encodings
     }
+
+    /// Forward pass for inference (no state updates, suitable for teacher model)
+    ///
+    /// Unlike `forward()`, this method:
+    /// - Does not update compounding state
+    /// - Does not update coherence state
+    /// - Is suitable for frozen teacher models in knowledge distillation
+    pub fn forward_inference(&self, x: &Tensor) -> TorusResult<Tensor> {
+        let (batch_size, seq_len, _) = x.dims3()?;
+
+        // Embed if needed
+        let mut h = if let Some(ref emb) = self.embedding {
+            emb.forward(x)?
+        } else {
+            x.clone()
+        };
+
+        // Add position encodings
+        let pos_enc = self.position_encodings.get_2d();
+        let pos_enc_broadcast =
+            pos_enc
+                .unsqueeze(0)?
+                .broadcast_as((batch_size, seq_len, self.config.d_model))?;
+        h = (h + pos_enc_broadcast)?;
+
+        // Process through layers WITHOUT compounding/coherence updates
+        for layer in self.layers.iter() {
+            let layer_output = layer.forward_with_attention(&h)?;
+            h = layer_output.output;
+        }
+
+        // Final norm
+        h = self.final_norm.forward(&h)?;
+
+        // Output projection
+        let output = self.output_proj.forward(&h)?;
+
+        Ok(output)
+    }
 }
 
 /// Inference-optimized wrapper for the bidirectional transformer

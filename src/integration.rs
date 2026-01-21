@@ -62,6 +62,7 @@ use crate::coherence::{CognitiveCoherenceLayer, CoherenceConfig};
 use crate::compounding::{CompoundingConfig, EMACompounding, MultiScaleCompounding};
 use crate::geometry::{TorusDistanceMatrix, TorusManifold};
 use crate::parallel_streams::{ParallelStreamConfig, ParallelStreamProcessor, StreamId};
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -237,10 +238,10 @@ impl BidirectionalTorusConfig {
 /// Single layer of the bidirectional torus transformer.
 ///
 /// Each layer performs:
-/// 1. Pre-normalization
+/// 1. Pre-normalization (RMSNorm for Metal compatibility)
 /// 2. 8-stream parallel attention (major/minor forward/backward, spiral CW/CCW, cross U↔V)
 /// 3. Residual connection
-/// 4. Post-attention normalization
+/// 4. Post-attention normalization (RMSNorm)
 /// 5. Feed-forward network with GELU activation
 /// 6. Final residual connection
 ///
@@ -252,10 +253,10 @@ pub struct BidirectionalTorusLayer {
     parallel_streams: ParallelStreamProcessor,
     /// Feed-forward network
     feed_forward: TorusFeedForward,
-    /// Pre-attention layer norm
-    pre_norm: candle_nn::LayerNorm,
-    /// Post-attention layer norm
-    post_attn_norm: candle_nn::LayerNorm,
+    /// Pre-attention layer norm (RMSNorm)
+    pre_norm: RmsNorm,
+    /// Post-attention layer norm (RMSNorm)
+    post_attn_norm: RmsNorm,
     /// Layer index
     #[allow(dead_code)]
     layer_idx: usize,
@@ -297,8 +298,8 @@ impl BidirectionalTorusLayer {
         let feed_forward =
             TorusFeedForward::new(config.d_model, config.d_ff, Activation::GELU, vb.pp("ff"))?;
 
-        let pre_norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("pre_norm"))?;
-        let post_attn_norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("post_attn_norm"))?;
+        let pre_norm = rms_norm(config.d_model, 1e-5, vb.pp("pre_norm"))?;
+        let post_attn_norm = rms_norm(config.d_model, 1e-5, vb.pp("post_attn_norm"))?;
 
         Ok(Self {
             parallel_streams,
@@ -442,8 +443,8 @@ pub struct BidirectionalTorusTransformer {
     coherence: Option<CognitiveCoherenceLayer>,
     /// Output projection
     output_proj: Linear,
-    /// Final layer norm
-    final_norm: candle_nn::LayerNorm,
+    /// Final layer norm (RMSNorm for Metal compatibility)
+    final_norm: RmsNorm,
     /// Configuration
     config: BidirectionalTorusConfig,
     /// Device
@@ -534,7 +535,7 @@ impl BidirectionalTorusTransformer {
             vb.pp("output"),
         )?;
 
-        let final_norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("final_norm"))?;
+        let final_norm = rms_norm(config.d_model, 1e-5, vb.pp("final_norm"))?;
 
         Ok(Self {
             embedding,

@@ -7,6 +7,7 @@
 //! This module implements attention mechanisms that leverage
 //! both loops for hierarchical information processing.
 
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -184,12 +185,12 @@ pub struct DualLoopFlow {
     pub minor_attention: LoopAttention,
     /// Cross-loop attention (optional)
     pub cross_attention: Option<LoopAttention>,
-    /// Layer norm for major path
-    pub norm_major: candle_nn::LayerNorm,
-    /// Layer norm for minor path
-    pub norm_minor: candle_nn::LayerNorm,
-    /// Layer norm for output
-    pub norm_output: candle_nn::LayerNorm,
+    /// Layer norm for major path (RMSNorm)
+    pub norm_major: RmsNorm,
+    /// Layer norm for minor path (RMSNorm)
+    pub norm_minor: RmsNorm,
+    /// Layer norm for output (RMSNorm)
+    pub norm_output: RmsNorm,
     /// Configuration
     pub config: DualLoopConfig,
 }
@@ -221,9 +222,9 @@ impl DualLoopFlow {
             None
         };
 
-        let norm_major = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("norm_major"))?;
-        let norm_minor = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("norm_minor"))?;
-        let norm_output = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("norm_output"))?;
+        let norm_major = rms_norm(config.d_model, 1e-5, vb.pp("norm_major"))?;
+        let norm_minor = rms_norm(config.d_model, 1e-5, vb.pp("norm_minor"))?;
+        let norm_output = rms_norm(config.d_model, 1e-5, vb.pp("norm_output"))?;
 
         Ok(Self {
             major_attention,

@@ -40,6 +40,9 @@ pub mod geometry;
 pub mod periodic;
 pub mod vortex;
 
+// CERN Hadron Collider-inspired validator module
+pub mod collider;
+
 // Bidirectional parallel processing modules
 pub mod bidirectional;
 pub mod coherence;
@@ -49,6 +52,7 @@ pub mod parallel_streams;
 
 // Training infrastructure
 pub mod metrics;
+pub mod rmsnorm;
 pub mod training;
 
 // LLM and API server
@@ -120,6 +124,16 @@ pub use dynamic_trainer::{
 // Metrics exports
 pub use metrics::{MetricsCollector, MetricsLogger};
 
+// RMSNorm exports (Metal-compatible normalization)
+pub use rmsnorm::{rms_norm, RmsNorm};
+
+// Collider exports (CERN Hadron Collider-inspired validator)
+pub use collider::{
+    AnomalyEvent, AnomalyMonitor, AnomalyThresholds, AnomalyType, ColliderConfig, ColliderMetrics,
+    ColliderReport, ConservationValidator, DarknessTracker, FourMomentum, Particle, ParticleBeam,
+    ParticleFlavor, TorusCollider, TorusColliderDetector,
+};
+
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;
 
@@ -160,5 +174,10 @@ pub mod prelude {
         TrainingMetrics,
 
         VortexDynamics,
+        
+        // Collider types
+        TorusCollider,
+        ColliderConfig,
+        AnomalyMonitor,
     };
 }

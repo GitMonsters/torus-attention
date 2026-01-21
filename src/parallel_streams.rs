@@ -14,6 +14,7 @@
 
 use crate::geometry::TorusCoordinate;
 use crate::periodic::PeriodicBoundary;
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -444,8 +445,8 @@ pub struct ParallelStreamProcessor {
     streams: Vec<ProcessingStream>,
     /// Learned weights for combining streams
     weights: StreamWeights,
-    /// Layer normalization
-    norm: candle_nn::LayerNorm,
+    /// Layer normalization (RMSNorm for Metal compatibility)
+    norm: RmsNorm,
     /// Configuration
     config: ParallelStreamConfig,
 }
@@ -460,7 +461,7 @@ impl ParallelStreamProcessor {
         }
 
         let weights = StreamWeights::from_vb(vb.pp("weights"), config.weight_temperature)?;
-        let norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("norm"))?;
+        let norm = rms_norm(config.d_model, 1e-5, vb.pp("norm"))?;
 
         Ok(Self {
             streams,
@@ -472,7 +473,11 @@ impl ParallelStreamProcessor {
 
     /// Forward pass through all 8 streams in parallel
     pub fn forward(&self, x: &Tensor) -> TorusResult<Tensor> {
-        let outputs: Vec<Tensor> = if self.config.parallel {
+        // Check if we're on Metal - if so, disable parallel execution
+        // Metal doesn't support concurrent command buffer access from multiple threads
+        let use_parallel = self.config.parallel && !x.device().is_metal();
+        
+        let outputs: Vec<Tensor> = if use_parallel {
             // Parallel execution using rayon
             // Note: For GPU tensors, this parallelism is at the Rust level,
             // not CUDA level. Actual benefit depends on CPU overhead.
@@ -481,7 +486,7 @@ impl ParallelStreamProcessor {
                 .map(|stream| stream.forward(x))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            // Sequential execution
+            // Sequential execution (required for Metal)
             self.streams
                 .iter()
                 .map(|stream| stream.forward(x))

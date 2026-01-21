@@ -7,6 +7,7 @@
 use crate::dual_loop::{DualLoopConfig, DualLoopFlow};
 use crate::geometry::{TorusDistanceMatrix, TorusManifold};
 use crate::periodic::PeriodicBoundary;
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 use candle_core::{Device, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -71,8 +72,8 @@ pub struct TorusAttention {
     value: Linear,
     /// Output projection
     output: Linear,
-    /// Layer normalization
-    norm: candle_nn::LayerNorm,
+    /// Layer normalization (RMSNorm for Metal compatibility)
+    norm: RmsNorm,
     /// Position encodings
     position_encodings: Tensor,
     /// Geodesic attention bias
@@ -97,8 +98,8 @@ impl TorusAttention {
         let value = candle_nn::linear(config.d_model, config.d_model, vb.pp("value"))?;
         let output = candle_nn::linear(config.d_model, config.d_model, vb.pp("output"))?;
 
-        // Layer norm
-        let norm = candle_nn::layer_norm(config.d_model, 1e-5, vb.pp("norm"))?;
+        // Layer norm (RMSNorm)
+        let norm = rms_norm(config.d_model, 1e-5, vb.pp("norm"))?;
 
         // Generate torus position encodings
         let boundary = PeriodicBoundary::new(config.n_major, config.n_minor);
@@ -256,7 +257,7 @@ impl TorusAttention {
 pub struct TorusFeedForward {
     linear1: Linear,
     linear2: Linear,
-    norm: candle_nn::LayerNorm,
+    norm: RmsNorm,
     activation: Activation,
 }
 
@@ -276,7 +277,7 @@ impl TorusFeedForward {
     ) -> TorusResult<Self> {
         let linear1 = candle_nn::linear(d_model, d_ff, vb.pp("linear1"))?;
         let linear2 = candle_nn::linear(d_ff, d_model, vb.pp("linear2"))?;
-        let norm = candle_nn::layer_norm(d_model, 1e-5, vb.pp("norm"))?;
+        let norm = rms_norm(d_model, 1e-5, vb.pp("norm"))?;
 
         Ok(Self {
             linear1,

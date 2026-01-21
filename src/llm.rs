@@ -50,13 +50,14 @@
 
 use candle_core::{DType, Device, IndexOp, Result as CandleResult, Tensor, D};
 use candle_nn::{
-    embedding, layer_norm, linear, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder,
+    embedding, linear, Dropout, Embedding, Linear, Module, VarBuilder,
     VarMap,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::error::TorusError;
 use crate::integration::{BidirectionalTorusConfig, BidirectionalTorusLayer};
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 
 /// Configuration for the Torus LLM
@@ -215,12 +216,12 @@ impl FeedForward {
     }
 }
 
-/// Single Transformer Block: LayerNorm -> Attention -> Residual -> LayerNorm -> FFN -> Residual
+/// Single Transformer Block: RMSNorm -> Attention -> Residual -> RMSNorm -> FFN -> Residual
 #[derive(Debug)]
 pub struct TransformerBlock {
-    ln1: LayerNorm,
+    ln1: RmsNorm,
     attention: BidirectionalTorusLayer,
-    ln2: LayerNorm,
+    ln2: RmsNorm,
     ffn: FeedForward,
     dropout: Dropout,
 }
@@ -232,8 +233,8 @@ impl TransformerBlock {
         vb: VarBuilder,
         device: &Device,
     ) -> TorusResult<Self> {
-        let ln1 = layer_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("ln1"))?;
-        let ln2 = layer_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("ln2"))?;
+        let ln1 = rms_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("ln1"))?;
+        let ln2 = rms_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("ln2"))?;
 
         let torus_config = config.to_torus_config();
         let attention =
@@ -287,8 +288,8 @@ pub struct TorusLLM {
     emb_dropout: Dropout,
     /// Transformer blocks
     layers: Vec<TransformerBlock>,
-    /// Final layer norm
-    final_ln: LayerNorm,
+    /// Final layer norm (RMSNorm for Metal compatibility)
+    final_ln: RmsNorm,
     /// Language model head (projects to vocab)
     lm_head: Option<Linear>,
     /// Device
@@ -318,8 +319,8 @@ impl TorusLLM {
             layers.push(block);
         }
 
-        // Final layer norm
-        let final_ln = layer_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("final_ln"))?;
+        // Final layer norm (RMSNorm)
+        let final_ln = rms_norm(config.hidden_dim, config.layer_norm_eps, vb.pp("final_ln"))?;
 
         // LM head (only if not tying embeddings)
         let lm_head = if config.tie_embeddings {

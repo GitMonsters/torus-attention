@@ -9,6 +9,7 @@
 //! - Backward flow: anti-causal attention from future to past
 //! - Symmetric combination: ensures equal treatment of both directions
 
+use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
 use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -291,8 +292,8 @@ pub struct BidirectionalAttention {
     backward: DirectionalAttention,
     /// Symmetric combiner for mixing
     combiner: SymmetricCombiner,
-    /// Layer normalization
-    norm: candle_nn::LayerNorm,
+    /// Layer normalization (RMSNorm for Metal compatibility)
+    norm: RmsNorm,
     /// Model dimension
     #[allow(dead_code)]
     d_model: usize,
@@ -324,7 +325,7 @@ impl BidirectionalAttention {
         )?;
 
         let combiner = SymmetricCombiner::from_vb(vb.pp("combiner"), combiner_temperature)?;
-        let norm = candle_nn::layer_norm(d_model, 1e-5, vb.pp("norm"))?;
+        let norm = rms_norm(d_model, 1e-5, vb.pp("norm"))?;
 
         Ok(Self {
             forward,

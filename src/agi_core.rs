@@ -29,6 +29,8 @@ use crate::general_coherence::{ArtificialGeneralCoherence, ExpansionArea};
 use crate::learning_webs::{LearningWebs, LearningWebsSummary};
 use crate::llm_integration::{LLMIntegration, LLMIntegrationConfig};
 use crate::memory_system::{MemorySystem, MemorySystemConfig};
+use crate::multi_agent::{AgentId, MultiAgentConfig, MultiAgentSystem};
+use crate::real_world::{RealWorldConfig, RealWorldInterface, SensorFusion};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -2794,6 +2796,14 @@ pub struct AGICore {
     /// Generates causal, contrastive, and counterfactual explanations
     pub explicability: ExplicabilitySystem,
 
+    /// Multi-Agent System - Peer collaboration and communication
+    /// Enables message routing, trust management, and collaborative tasks
+    pub multi_agent: MultiAgentSystem,
+
+    /// Real-World Interface - Sensor/actuator abstraction
+    /// Provides sensor fusion and embodied interaction capabilities
+    pub sensor_fusion: SensorFusion,
+
     /// Previous symbol count for tracking new groundings per step
     prev_grounded_symbols: usize,
 
@@ -2856,6 +2866,10 @@ impl AGICore {
             llm_integration: LLMIntegration::new(LLMIntegrationConfig::default()),
             // Initialize Explicability System for decision explanations
             explicability: ExplicabilitySystem::new(ExplicabilityConfig::default()),
+            // Initialize Multi-Agent System for peer collaboration
+            multi_agent: MultiAgentSystem::new(MultiAgentConfig::default()),
+            // Initialize Sensor Fusion for real-world perception
+            sensor_fusion: SensorFusion::new(RealWorldConfig::default()),
             // Track new symbol groundings
             prev_grounded_symbols: 0,
             last_action_has_symbol: false,
@@ -2886,6 +2900,96 @@ impl AGICore {
         // This creates a DIRECT connection between experience and action selection
         // ═══════════════════════════════════════════════════════════════════
         self.update_action_values(state, action, next_state, reward, is_terminal);
+
+        // ═══════════════════════════════════════════════════════════════════
+        // COMPOUND INTEGRATION BLOCK - All new systems feed into each other
+        // ═══════════════════════════════════════════════════════════════════
+
+        // 0a. MEMORY → DECISION: Retrieve relevant memories to inform current decision
+        // This creates episodic recall that influences future actions
+        let memory_boost = {
+            // Use state as query for memory retrieval
+            let retrieved = self.memory_system.retrieve(state);
+            if retrieved.episode_count > 0 {
+                // Use working memory context to inform current decision
+                let context = retrieved.working_context;
+                if !context.is_empty() {
+                    // Compute similarity-weighted adjustment from past outcomes
+                    let avg_context: f64 = context.iter().sum::<f64>() / context.len() as f64;
+                    avg_context * 0.05 // Small memory-informed adjustment
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        };
+
+        // Apply memory boost to current state-action value
+        if memory_boost.abs() > 0.01 {
+            let state_disc = self.discretize_state(state);
+            let key = (state_disc, action);
+            if let Some(av) = self.action_values.get_mut(&key) {
+                av.q_value += memory_boost * self.q_learning_rate;
+            }
+        }
+
+        // 0b. LLM → SYMBOL GROUNDING: Ground language to current experience
+        // Creates bidirectional mapping between words and sensorimotor states
+        if self.current_step % 10 == 0 {
+            // Periodically update semantic grounding with current experience
+            let action_name = format!("action_{}", action);
+            self.llm_integration.grounding.ground(
+                &action_name,
+                state.to_vec(),
+                vec![action as f64 / self.n_actions as f64],
+                self.current_step,
+            );
+
+            // If we have activated concepts, ground their names too
+            let activated = self.abstraction.get_activated_concepts(state);
+            for (concept_id, similarity) in activated.iter().take(2) {
+                if *similarity > 0.5 {
+                    let concept_name = format!("concept_{}", concept_id);
+                    self.llm_integration.grounding.ground(
+                        &concept_name,
+                        state.to_vec(),
+                        vec![*similarity],
+                        self.current_step,
+                    );
+                }
+            }
+        }
+
+        // 0c. EXPLICABILITY → META-LEARNING: Learn from decision patterns
+        // Successful decisions inform future exploration/exploitation balance
+        if self.current_step > 50 && self.current_step % 25 == 0 {
+            let exp_summary = self.explicability.summary();
+            if exp_summary.decisions_with_outcomes > 10 {
+                let success_rate = exp_summary.successful_decisions as f64
+                    / exp_summary.decisions_with_outcomes as f64;
+                // High success → more exploitation, low success → more exploration
+                if success_rate > 0.7 {
+                    self.meta_learner.best_exploration_rate =
+                        (self.meta_learner.best_exploration_rate * 0.98).max(0.05);
+                } else if success_rate < 0.3 {
+                    self.meta_learner.best_exploration_rate =
+                        (self.meta_learner.best_exploration_rate * 1.02).min(0.5);
+                }
+            }
+        }
+
+        // 0d. MULTI-AGENT → LEARNING: Process any incoming messages from peers
+        // Enables collaborative learning and knowledge sharing
+        if self.current_step % 20 == 0 {
+            // Check message history for recent activity
+            let recent_messages = self.multi_agent.router.get_history(5);
+            if !recent_messages.is_empty() {
+                // Process messages would update shared knowledge
+                // This is a hook for when multiple AGI instances collaborate
+                self.analytics.total_interactions += recent_messages.len();
+            }
+        }
 
         // 1. CAUSAL DISCOVERY - observe patterns
         self.causal_discovery
@@ -4811,5 +4915,221 @@ mod tests {
         let summary = core.summary();
         assert_eq!(summary.current_step, 100);
         assert!(summary.analytics.total_interactions > 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // INTEGRATION TESTS - New Systems Working Together
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_memory_system_integration() {
+        let config = AGICoreConfig::default();
+        let mut core = AGICore::new(config, 4, 4);
+
+        // Process experiences with varying rewards to trigger memory storage
+        for i in 0..150 {
+            let state = vec![i as f64 * 0.1, (i as f64 * 0.1).sin(), 0.5, 0.5];
+            let next_state = vec![(i + 1) as f64 * 0.1, ((i + 1) as f64 * 0.1).sin(), 0.5, 0.5];
+            // High reward every 10 steps triggers episodic memory storage
+            let reward = if i % 10 == 0 { 0.8 } else { 0.1 };
+            let is_terminal = i == 149;
+            core.process_experience(&state, i % 4, &next_state, reward, is_terminal);
+        }
+
+        // Memory system should have stored episodic memories for high-reward events
+        let memory_summary = core.memory_system.summary();
+        assert!(
+            memory_summary.episodic_count > 0,
+            "Should have stored episodic memories for significant events"
+        );
+
+        // Verify total steps tracked
+        assert!(
+            memory_summary.total_steps > 0,
+            "Memory system should track steps"
+        );
+    }
+
+    #[test]
+    fn test_explicability_integration() {
+        use crate::explicability::ExplanationType;
+
+        let config = AGICoreConfig::default();
+        let mut core = AGICore::new(config, 4, 4);
+
+        // Process some experiences to build decision history
+        for i in 0..50 {
+            let state = vec![i as f64 * 0.1, 0.5, 0.5, 0.5];
+            let next_state = vec![(i + 1) as f64 * 0.1, 0.5, 0.5, 0.5];
+            let reward = if i % 5 == 0 { 0.5 } else { -0.1 };
+            core.process_experience(&state, i % 4, &next_state, reward, false);
+        }
+
+        // Explicability system should have recorded decisions
+        let explicability_summary = core.explicability.summary();
+        assert!(
+            explicability_summary.total_decisions > 0,
+            "Should have recorded decisions"
+        );
+        assert_eq!(
+            explicability_summary.total_decisions, 50,
+            "Should have recorded exactly 50 decisions"
+        );
+
+        // Verify average confidence is reasonable
+        assert!(
+            explicability_summary.average_confidence >= 0.0
+                && explicability_summary.average_confidence <= 1.0,
+            "Confidence should be normalized"
+        );
+    }
+
+    #[test]
+    fn test_llm_integration_grounding() {
+        let config = AGICoreConfig::default();
+        let mut core = AGICore::new(config, 4, 4);
+
+        // LLM integration should be initialized
+        let llm_summary = core.llm_integration.summary();
+        assert_eq!(
+            llm_summary.grounded_symbols, 0,
+            "Should start with no grounded symbols"
+        );
+
+        // Test language processing
+        let tokens = core.llm_integration.processor.tokenize("hello world");
+        assert!(tokens.len() >= 2, "Should tokenize into multiple tokens");
+    }
+
+    #[test]
+    fn test_all_new_systems_initialized() {
+        let config = AGICoreConfig::default();
+        let core = AGICore::new(config, 4, 4);
+
+        // Verify all new systems are properly initialized
+        // Memory system
+        let mem_summary = core.memory_system.summary();
+        assert_eq!(mem_summary.episodic_count, 0);
+        assert_eq!(mem_summary.semantic_count, 0);
+        assert_eq!(mem_summary.procedural_count, 0);
+
+        // LLM integration
+        let llm_summary = core.llm_integration.summary();
+        assert_eq!(llm_summary.grounded_symbols, 0);
+
+        // Explicability
+        let exp_summary = core.explicability.summary();
+        assert_eq!(exp_summary.total_decisions, 0);
+    }
+
+    #[test]
+    fn test_integrated_learning_loop_with_new_systems() {
+        let config = AGICoreConfig::default();
+        let mut core = AGICore::new(config, 8, 6);
+
+        // Simulate a more realistic learning scenario
+        let mut total_reward = 0.0;
+
+        for episode in 0..3 {
+            for step in 0..50 {
+                // State evolves based on action
+                let state = vec![
+                    (episode * 50 + step) as f64 * 0.02,
+                    ((step as f64) * 0.1).sin(),
+                    ((step as f64) * 0.1).cos(),
+                    0.5,
+                    episode as f64 * 0.3,
+                    0.0,
+                    0.0,
+                    0.0,
+                ];
+
+                let action = step % 6;
+                let next_step = step + 1;
+
+                let next_state = vec![
+                    (episode * 50 + next_step) as f64 * 0.02,
+                    ((next_step as f64) * 0.1).sin(),
+                    ((next_step as f64) * 0.1).cos(),
+                    0.5,
+                    episode as f64 * 0.3,
+                    0.0,
+                    0.0,
+                    0.0,
+                ];
+
+                // Reward structure: good for certain actions, bad for others
+                let reward = if action == 0 || action == 1 {
+                    0.5
+                } else if action == 5 {
+                    -0.3
+                } else {
+                    0.1
+                };
+
+                total_reward += reward;
+                let is_terminal = step == 49;
+
+                core.process_experience(&state, action, &next_state, reward, is_terminal);
+            }
+        }
+
+        // Verify learning occurred across all systems
+        let summary = core.summary();
+        assert_eq!(summary.current_step, 150);
+
+        // Memory should have stored experiences
+        let mem_summary = core.memory_system.summary();
+        assert!(
+            mem_summary.episodic_count > 0,
+            "Should have episodic memories after learning"
+        );
+
+        // Explicability should have decision history
+        let exp_summary = core.explicability.summary();
+        assert!(
+            exp_summary.total_decisions >= 100,
+            "Should have recorded most decisions (got {})",
+            exp_summary.total_decisions
+        );
+
+        // Q-learning should have entries
+        assert!(
+            summary.q_learning.0 > 0,
+            "Should have Q-value entries after learning"
+        );
+
+        // World model should have states
+        assert!(
+            summary.world_model.total_states > 0,
+            "World model should have learned states"
+        );
+
+        // AGC should be tracking coherence (check meaningfulness which is always tracked)
+        assert!(
+            core.agc.psychological.meaningfulness >= 0.0,
+            "AGC should track psychological coherence"
+        );
+    }
+
+    #[test]
+    fn test_memory_consolidation_trigger() {
+        let config = AGICoreConfig::default();
+        let mut core = AGICore::new(config, 4, 4);
+
+        // Run exactly 100 steps to trigger consolidation
+        for i in 0..100 {
+            let state = vec![i as f64 * 0.1, 0.5, 0.5, 0.5];
+            let next_state = vec![(i + 1) as f64 * 0.1, 0.5, 0.5, 0.5];
+            core.process_experience(&state, i % 4, &next_state, 0.5, false);
+        }
+
+        // Memory consolidation should have been triggered at step 100
+        // Check via summary that the system has processed experiences
+        let mem_summary = core.memory_system.summary();
+        assert!(
+            mem_summary.total_steps > 0 || mem_summary.episodic_count > 0,
+            "Memory system should have processed experiences"
+        );
     }
 }

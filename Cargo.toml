@@ -73,10 +73,11 @@ tensorboard-rs = "0.5"
 chrono = "0.4"
 
 [features]
-default = []
+default = ["metal"]  # Enable Metal GPU by default (macOS)
 python = ["pyo3"]
 cuda = ["candle-core/cuda"]
 metal = ["candle-core/metal"]
+# Note: On non-macOS, use: cargo build --no-default-features --features cuda
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

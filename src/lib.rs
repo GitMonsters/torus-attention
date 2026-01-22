@@ -50,8 +50,16 @@ pub mod distillation;
 pub mod bidirectional;
 pub mod coherence;
 pub mod compounding;
+pub mod compounding_cohesion;
+pub mod compounding_transformer;
 pub mod integration;
 pub mod parallel_streams;
+
+// Sensorimotor integration for full compounding closure
+pub mod sensorimotor;
+
+// Consequential reasoning and AGI systems
+pub mod consequential;
 
 // Training infrastructure
 pub mod metrics;
@@ -92,6 +100,15 @@ pub use coherence::{
 };
 pub use compounding::{
     CompoundingConfig, CompoundingStats, EMACompounding, LearnableAlpha, MultiScaleCompounding,
+};
+pub use compounding_cohesion::{
+    AdaptiveCoherenceWeights, CompoundingCohesionConfig, CompoundingCohesionSystem,
+    CompoundingResult, ConsolidationResult, CrossLayerSMM, GoalState, GoalStateGenerator,
+    GoalType, GraphEdge, GraphNode, GraphStats, HierarchicalCoherence, HierarchicalSOC,
+    HierarchyLevel, PredictiveCoherence, StreamGraphMemory,
+};
+pub use compounding_transformer::{
+    CompoundingCohesionTransformer, CompoundingTransformerConfig, CompoundingTransformerStats,
 };
 pub use integration::{
     BidirectionalStats, BidirectionalTorusConfig, BidirectionalTorusInference,
@@ -143,6 +160,24 @@ pub use distillation::{
     DistillationCheckpointMetadata, load_transformer_checkpoint, save_transformer_checkpoint,
 };
 
+// Sensorimotor exports (full compounding closure)
+pub use sensorimotor::{
+    Action, ActionResult, ActionType, CoherenceGuidedPolicy, CognitiveDissonanceTracker,
+    DissonanceStats, Environment, EpisodeResult, HypothesisTestingPolicy, Landmark,
+    LearningEnvConfig, LearningEnvStats, LearningGridEnvironment, MemoryContext,
+    MemoryGuidedPolicy, MotorPolicy, MotorStats, MotorSystem, Observation, ObservationMetadata,
+    Pose3D, ReactivePolicy, SeededRng, SensorimotorAgent, SensorimotorConfig,
+    SimpleGridEnvironment, StepStats,
+};
+
+// Consequential reasoning exports (AGI systems)
+pub use consequential::{
+    AGIDecision, AGIReasoningSystem, AGIReasoningSummary, CausalGraph, CausalGraphSummary,
+    CausalMechanism, CausalVariable, CompoundingMetrics, CompoundingSummary, ConsequenceNode,
+    ConsequentialThinking, CounterfactualOutcome, DecisionMethod, Intervention, StreamVote,
+    StreamVotingSystem, TransitionModel, VotingResult, VotingStats,
+};
+
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;
 
@@ -157,11 +192,22 @@ pub mod prelude {
         CognitiveCoherenceLayer,
         CoherenceConfig,
 
+        CompoundingCohesionTransformer,
         CompoundingConfig,
+        // Full compounding cohesion types
+        CompoundingCohesionConfig,
+        CompoundingCohesionSystem,
+        CompoundingResult,
+        CompoundingTransformerConfig,
 
         EMACompounding,
         // Bidirectional types
         FlowDirection,
+        // Goal states for sensorimotor closure
+        GoalState,
+        GoalType,
+        // Hierarchical coherence
+        HierarchicalCoherence,
         LRScheduler,
         PeriodicBoundary,
 
@@ -188,5 +234,28 @@ pub mod prelude {
         TorusCollider,
         ColliderConfig,
         AnomalyMonitor,
+        
+        // Sensorimotor types for full compounding loop
+        SensorimotorAgent,
+        SensorimotorConfig,
+        MotorSystem,
+        Environment,
+        SimpleGridEnvironment,
+        LearningGridEnvironment,
+        LearningEnvConfig,
+        CognitiveDissonanceTracker,
+        Observation,
+        Action,
+        ActionType,
+        Pose3D,
+        
+        // AGI Reasoning types (consequential reasoning)
+        AGIReasoningSystem,
+        AGIDecision,
+        CausalGraph,
+        ConsequentialThinking,
+        StreamVotingSystem,
+        CompoundingMetrics,
+        DecisionMethod,
     };
 }

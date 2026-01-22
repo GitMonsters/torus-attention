@@ -405,7 +405,7 @@ impl CausalGraph {
 
     /// Learn causal structure from intervention outcome
     pub fn learn_from_outcome(&mut self, outcome_values: &HashMap<usize, f64>) {
-        if let Some((intervention, predicted)) = self.intervention_history.back() {
+        if let Some((_intervention, predicted)) = self.intervention_history.back() {
             // Compare predicted vs actual for each variable
             for (&var_id, &actual_value) in outcome_values {
                 let predicted_value = predicted.get(&var_id).copied().unwrap_or(0.0);
@@ -844,7 +844,7 @@ impl StreamVotingSystem {
         let mut stream_winners: Vec<usize> = Vec::new();
 
         // Collect each stream's top hypothesis
-        for (stream_id, evidence) in self.evidence_state.iter().enumerate() {
+        for (_stream_id, evidence) in self.evidence_state.iter().enumerate() {
             let (best_hyp, best_evidence) = evidence
                 .iter()
                 .enumerate()

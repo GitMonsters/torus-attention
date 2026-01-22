@@ -83,9 +83,9 @@
 use crate::agi_core::{AGICore, AGICoreConfig, GoalPriority};
 use crate::compounding_cohesion::{GoalState, GoalType};
 use crate::compounding_transformer::CompoundingCohesionTransformer;
-use crate::consequential::{AGIDecision, AGIReasoningSystem, CompoundingMetrics, StreamVote};
+use crate::consequential::AGIReasoningSystem;
 use crate::TorusResult;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -476,7 +476,7 @@ impl MotorPolicy for CoherenceGuidedPolicy {
         action
     }
 
-    fn update(&mut self, action: &Action, result: &ActionResult) {
+    fn update(&mut self, _action: &Action, result: &ActionResult) {
         self.success_history.push_back(result.success);
         if self.success_history.len() > 100 {
             self.success_history.pop_front();
@@ -2315,6 +2315,7 @@ impl LearningGridEnvironment {
     }
 
     /// Find nearest landmark and its features
+    #[allow(dead_code)]
     fn nearest_landmark(&self, pos: &Pose3D) -> Option<&Landmark> {
         self.landmarks
             .iter()

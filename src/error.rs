@@ -30,4 +30,7 @@ pub enum TorusError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Backend error: {0}")]
+    Backend(String),
 }

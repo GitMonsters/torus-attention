@@ -27,9 +27,15 @@ name = "torus_dynamic_train"
 path = "src/bin/torus_dynamic_train.rs"
 
 [dependencies]
-# Core ML - Hugging Face's Rust ML framework
+# Core ML - Hugging Face's Rust ML framework (always required)
 candle-core = "0.9"
 candle-nn = "0.9"
+
+# Burn - Optional GPU accelerator for AMD/Vulkan (use alongside candle)
+burn = { version = "0.16", optional = true, default-features = false }
+burn-autodiff = { version = "0.16", optional = true }
+burn-wgpu = { version = "0.16", optional = true } # Vulkan/WebGPU for AMD GPUs
+burn-ndarray = { version = "0.16", optional = true } # CPU backend
 
 # NumPy equivalent for Rust
 ndarray = "0.16"
@@ -73,11 +79,28 @@ tensorboard-rs = "0.5"
 chrono = "0.4"
 
 [features]
-default = ["metal"]  # Enable Metal GPU by default (macOS)
+# Default: CPU-only mode (no GPU acceleration)
+default = []
+
+# GPU acceleration options
+cuda = ["candle-core/cuda"]   # NVIDIA GPU via CUDA
+metal = ["candle-core/metal"] # Apple GPU via Metal
+
+# AMD GPU support via Vulkan/WGPU (experimental)
+# This enables burn-wgpu which uses Vulkan on AMD GPUs
+amd-gpu = ["burn", "burn-autodiff", "burn-wgpu"]
+
+# CPU-only burn backend (for testing)
+burn-cpu = ["burn", "burn-autodiff", "burn-ndarray"]
+
+# Python bindings
 python = ["pyo3"]
-cuda = ["candle-core/cuda"]
-metal = ["candle-core/metal"]
-# Note: On non-macOS, use: cargo build --no-default-features --features cuda
+
+# Usage:
+# - CPU only:     cargo build --release
+# - NVIDIA CUDA:  cargo build --release --features cuda
+# - Apple Metal:  cargo build --release --features metal
+# - AMD GPU:      cargo build --release --features amd-gpu
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -79,7 +79,7 @@ use crate::attention::{Activation, TorusFeedForward};
 use crate::bidirectional::TorusBidirectionalEncoding;
 use crate::compounding::{CompoundingConfig, EMACompounding, MultiScaleCompounding};
 use crate::compounding_cohesion::{
-    CompoundingCohesionConfig, CompoundingCohesionSystem, CompoundingResult, ConsolidationResult,
+    CompoundingCohesionConfig, CompoundingCohesionSystem, ConsolidationResult,
     GoalState,
 };
 use crate::geometry::{TorusDistanceMatrix, TorusManifold};
@@ -320,6 +320,7 @@ pub struct CompoundingCohesionTransformer {
     /// Configuration
     config: CompoundingTransformerConfig,
     /// Device
+    #[allow(dead_code)]
     device: Device,
 }
 

@@ -53,10 +53,10 @@
 //! ```
 
 use crate::coherence::{
-    CognitiveCoherenceLayer, CoherenceConfig, SenseOfCoherence, SharedMentalModel,
+    CognitiveCoherenceLayer, CoherenceConfig, SenseOfCoherence,
 };
 use crate::TorusResult;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
@@ -852,7 +852,7 @@ impl StreamGraphMemory {
 
             // TD update: SR(s) = features(s) + gamma * SR(s')
             // We approximate SR(s') with next_features for now
-            for (i, (sr_f, (curr_f, next_f))) in sr
+            for (_i, (sr_f, (curr_f, next_f))) in sr
                 .expected_features
                 .iter_mut()
                 .zip(current_features.iter().zip(next_features.iter()))
@@ -1073,6 +1073,7 @@ pub struct HierarchicalCoherence {
     /// Configuration
     pub config: CompoundingCohesionConfig,
     /// Device
+    #[allow(dead_code)]
     device: Device,
 }
 
@@ -1727,6 +1728,7 @@ pub struct CompoundingCohesionSystem {
     /// Episode counter
     pub episode: usize,
     /// Device
+    #[allow(dead_code)]
     device: Device,
     /// Adaptive temperature for exploration vs exploitation
     /// Starts high (exploration) and decreases as memory builds up

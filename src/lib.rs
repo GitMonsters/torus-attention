@@ -10,8 +10,26 @@
 //! - Vortex/spiral information flow patterns
 //! - **8-stream bidirectional parallel processing**
 //! - **Learnable EMA compounding across layers**
-//! - GPU acceleration via candle-core
+//! - **Multi-GPU support**: Metal (macOS), CUDA (NVIDIA), ROCm (AMD), Vulkan (cross-platform)
 //! - Python bindings via PyO3
+//!
+//! ## GPU Backends
+//!
+//! Build with different GPU backends using feature flags:
+//!
+//! ```bash
+//! # AMD GPU via ROCm (recommended for AMD hardware)
+//! cargo build --release --no-default-features --features burn-rocm
+//!
+//! # Any GPU via Vulkan/WGPU
+//! cargo build --release --no-default-features --features burn-vulkan
+//!
+//! # Legacy: NVIDIA GPU via CUDA (candle)
+//! cargo build --release --no-default-features --features cuda
+//!
+//! # Legacy: macOS GPU via Metal (candle)
+//! cargo build --release --no-default-features --features metal
+//! ```
 //!
 //! ## Architecture
 //!
@@ -34,6 +52,7 @@
 
 // Core modules
 pub mod attention;
+pub mod backend;  // NEW: Multi-GPU backend abstraction
 pub mod dual_loop;
 pub mod error;
 pub mod geometry;
@@ -199,6 +218,10 @@ pub use agi_core::{
     // Compounding Analytics
     CompoundingAnalytics,
 };
+
+// GPU compute exports (AMD GPU acceleration)
+#[cfg(feature = "amd-gpu")]
+pub use backend::{GpuCompute, GpuError};
 
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;

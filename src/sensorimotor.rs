@@ -1350,6 +1350,8 @@ impl SensorimotorAgent {
             world_model_error_threshold: 0.15,
             goal_completion_threshold: 0.85,
             symbol_grounding_threshold: 0.6,
+            max_skills: 200,
+            counterfactual_regret_threshold: 0.1,
         });
 
         Self {

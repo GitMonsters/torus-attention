@@ -291,6 +291,8 @@ fn main() -> TorusResult<()> {
         world_model_error_threshold: 0.15,
         goal_completion_threshold: 0.55, // Lowered from 0.85 for easier completion
         symbol_grounding_threshold: 0.45, // Lowered from 0.6 for easier grounding
+        max_skills: 200,
+        counterfactual_regret_threshold: 0.1,
     };
 
     // Create agent with FULL AGI (AGIReasoningSystem + AGICore integrated)
@@ -420,13 +422,15 @@ fn main() -> TorusResult<()> {
             );
         }
 
-        // Replace environment for next episode (with new random seed)
-        // Preserve BOTH AGI reasoning AND AGI Core state across episodes
+        // Replace environment for next episode
+        // Use SAME seed for environment layout (landmarks, obstacles)
+        // but the goal position will still randomize within the environment
+        // This tests if the system can learn to navigate the SAME map to DIFFERENT goals
         if episode < n_episodes - 1 {
             let new_env = LearningGridEnvironment::new(
                 env_config.clone(),
                 &device,
-                42 + (episode as u64 + 1) * 17, // Different seed each episode
+                42, // SAME seed = same map layout, but goal resets randomly
             );
             // Extract AGI systems to preserve them
             let agi_reasoning = agent.agi_reasoning.take();
@@ -517,6 +521,12 @@ fn main() -> TorusResult<()> {
     println!();
     if let Some(ref agi_core) = agent.agi_core {
         agi_core.print_summary();
+        // Print Cognitive Health Report (Collider-inspired)
+        agi_core.print_health_report();
+        // Print Artificial General Coherence (AGC) report
+        agi_core.agc.print_summary();
+        // Print Foundational Principles
+        agi_core.agc.principles.print_summary();
     } else {
         println!("AGI Core: Not enabled");
     }

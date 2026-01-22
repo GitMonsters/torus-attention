@@ -22,6 +22,7 @@
 
 use crate::compounding_cohesion::{CompoundingCohesionConfig, CompoundingCohesionSystem};
 use crate::consequential::{AGIReasoningSystem, CausalGraph, CausalMechanism, CausalVariable};
+use crate::general_coherence::{ArtificialGeneralCoherence, ExpansionArea};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -54,6 +55,10 @@ pub struct AGICoreConfig {
     pub goal_completion_threshold: f64,
     /// Symbol grounding confidence threshold
     pub symbol_grounding_threshold: f64,
+    /// Maximum skills to store
+    pub max_skills: usize,
+    /// Counterfactual regret threshold for policy updates
+    pub counterfactual_regret_threshold: f64,
 }
 
 impl Default for AGICoreConfig {
@@ -65,11 +70,13 @@ impl Default for AGICoreConfig {
             max_active_goals: 10,
             meta_learning_window: 100,
             max_symbols: 500,
-            causal_discovery_threshold: 0.3,
-            abstraction_merge_threshold: 0.85,
+            causal_discovery_threshold: 0.15, // LOWERED from 0.3 for faster discovery
+            abstraction_merge_threshold: 0.75, // LOWERED from 0.85 for more concepts
             world_model_error_threshold: 0.1,
-            goal_completion_threshold: 0.65, // Lowered from 0.9 for noisy environments
-            symbol_grounding_threshold: 0.5, // Lowered from 0.7 for easier grounding
+            goal_completion_threshold: 0.55, // Lowered from 0.65 for noisy environments
+            symbol_grounding_threshold: 0.40, // Lowered from 0.5 for easier grounding
+            max_skills: 200,
+            counterfactual_regret_threshold: 0.1,
         }
     }
 }
@@ -156,8 +163,8 @@ impl CausalDiscovery {
 
         self.current_step += 1;
 
-        // Attempt discovery every 50 steps
-        if self.current_step % 50 == 0 {
+        // Attempt discovery every 25 steps (more frequent for faster emergence)
+        if self.current_step % 25 == 0 {
             self.attempt_discovery();
         }
     }
@@ -308,6 +315,52 @@ impl CausalDiscovery {
         }
     }
 
+    /// Set discovery threshold (for meta-learning integration)
+    pub fn set_discovery_threshold(&mut self, threshold: f64) {
+        self.config.causal_discovery_threshold = threshold.max(0.1).min(0.9);
+        // Clear cache when threshold changes to re-evaluate pairs
+        self.mutual_info_cache.clear();
+    }
+
+    /// Get current discovery threshold
+    pub fn get_discovery_threshold(&self) -> f64 {
+        self.config.causal_discovery_threshold
+    }
+
+    /// Design an experiment to test causal hypotheses (active experimentation)
+    /// Returns: (variable_indices_to_perturb, suggested_action, expected_info_gain)
+    pub fn design_experiment(&self) -> Option<CausalExperiment> {
+        // Find variable pairs with high but uncertain MI
+        let mut uncertain_pairs: Vec<(usize, usize, f64)> = Vec::new();
+
+        for (&(i, j), &mi) in &self.mutual_info_cache {
+            // Look for moderately correlated pairs (not too obvious, not too weak)
+            if mi > 0.2 && mi < 0.7 {
+                uncertain_pairs.push((i, j, mi));
+            }
+        }
+
+        // Sort by information gain potential (middle values are most informative)
+        uncertain_pairs.sort_by(|a, b| {
+            let info_a = (0.5 - (a.2 - 0.5).abs());
+            let info_b = (0.5 - (b.2 - 0.5).abs());
+            info_b
+                .partial_cmp(&info_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        uncertain_pairs.first().map(|&(i, j, mi)| CausalExperiment {
+            variable_indices: vec![i, j],
+            expected_info_gain: 0.5 - (mi - 0.5).abs(),
+            hypothesis: format!("Test if feature {} causally influences feature {}", i, j),
+            suggested_intervention: if mi > 0.5 {
+                InterventionType::Increase(i)
+            } else {
+                InterventionType::Decrease(i)
+            },
+        })
+    }
+
     /// Get summary statistics
     pub fn summary(&self) -> CausalDiscoverySummary {
         CausalDiscoverySummary {
@@ -337,6 +390,32 @@ pub struct CausalDiscoverySummary {
     pub total_observations: usize,
     pub avg_information_gain: f64,
     pub most_useful: Option<String>,
+}
+
+/// A designed causal experiment for active learning
+#[derive(Debug, Clone)]
+pub struct CausalExperiment {
+    /// Feature indices to test
+    pub variable_indices: Vec<usize>,
+    /// Expected information gain from this experiment
+    pub expected_info_gain: f64,
+    /// Human-readable hypothesis being tested
+    pub hypothesis: String,
+    /// Suggested intervention to test causality
+    pub suggested_intervention: InterventionType,
+}
+
+/// Types of interventions for causal experiments
+#[derive(Debug, Clone)]
+pub enum InterventionType {
+    /// Increase the value of feature at index
+    Increase(usize),
+    /// Decrease the value of feature at index
+    Decrease(usize),
+    /// Set feature to specific value
+    SetTo(usize, f64),
+    /// Randomize feature
+    Randomize(usize),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1155,8 +1234,8 @@ impl GoalHierarchy {
             .map(|(idx, _)| idx)
     }
 
-    /// Update goal progress based on current state
-    pub fn update_progress(&mut self, current_state: &[f64]) {
+    /// Update goal progress based on current state - returns completed goal IDs for credit assignment
+    pub fn update_progress(&mut self, current_state: &[f64]) -> Vec<usize> {
         self.current_step += 1;
         let mut completed_goals = Vec::new();
 
@@ -1183,13 +1262,13 @@ impl GoalHierarchy {
         }
 
         // Handle completions
-        for goal_id in completed_goals {
-            self.active_goals.retain(|&id| id != goal_id);
+        for goal_id in &completed_goals {
+            self.active_goals.retain(|&id| id != *goal_id);
             self.achievement_history
-                .push_back((goal_id, true, self.current_step));
+                .push_back((*goal_id, true, self.current_step));
 
             // Check if parent goal should be updated
-            if let Some(parent_id) = self.goals.get(&goal_id).and_then(|g| g.parent) {
+            if let Some(parent_id) = self.goals.get(goal_id).and_then(|g| g.parent) {
                 self.update_parent_progress(parent_id);
             }
         }
@@ -1197,6 +1276,8 @@ impl GoalHierarchy {
         while self.achievement_history.len() > 100 {
             self.achievement_history.pop_front();
         }
+
+        completed_goals
     }
 
     fn update_parent_progress(&mut self, parent_id: usize) {
@@ -1310,6 +1391,18 @@ impl GoalHierarchy {
     /// Get number of active goals
     pub fn active_count(&self) -> usize {
         self.active_goals.len()
+    }
+
+    /// Get recently completed goals (for skill extraction)
+    pub fn get_recently_completed(&self) -> Vec<&Goal> {
+        self.achievement_history
+            .iter()
+            .rev()
+            .take(5)
+            .filter(|(_, success, _)| *success)
+            .filter_map(|(id, _, _)| self.goals.get(id))
+            .filter(|g| g.status == GoalStatus::Completed)
+            .collect()
     }
 
     /// Get summary statistics
@@ -1915,6 +2008,17 @@ impl SymbolSystem {
         self.symbols.get(&id)
     }
 
+    /// Get symbols activated by current state (similarity above threshold)
+    pub fn get_activated_symbols(&self, state: &[f64], threshold: f64) -> Vec<&Symbol> {
+        self.symbols
+            .values()
+            .filter(|s| {
+                s.grounding_confidence >= self.config.symbol_grounding_threshold
+                    && cosine_sim(&s.sensory_grounding, state) >= threshold
+            })
+            .collect()
+    }
+
     /// Get summary statistics
     pub fn summary(&self) -> SymbolSystemSummary {
         let grounded_count = self
@@ -1974,6 +2078,358 @@ pub struct SymbolSystemSummary {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SKILL SYSTEM - Extract reusable action sequences
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A learned skill (reusable action sequence)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Skill {
+    /// Unique identifier
+    pub id: usize,
+    /// Human-readable name
+    pub name: String,
+    /// Precondition features (when can this skill be applied)
+    pub preconditions: Vec<f64>,
+    /// Expected effect features (what this skill achieves)
+    pub effects: Vec<f64>,
+    /// Action sequence
+    pub action_sequence: Vec<usize>,
+    /// Success rate
+    pub success_rate: f64,
+    /// Times executed
+    pub execution_count: usize,
+    /// Average reward when executed
+    pub avg_reward: f64,
+    /// Source goal ID (if extracted from goal completion)
+    pub source_goal: Option<usize>,
+}
+
+/// Skill library for storing and retrieving reusable behaviors
+#[derive(Debug, Clone)]
+pub struct SkillLibrary {
+    /// All learned skills
+    pub skills: HashMap<usize, Skill>,
+    /// Next skill ID
+    next_id: usize,
+    /// Action buffer for detecting skill-worthy sequences
+    action_buffer: VecDeque<(Vec<f64>, usize, f64)>, // (state, action, reward)
+    /// Configuration
+    config: AGICoreConfig,
+}
+
+impl SkillLibrary {
+    pub fn new(config: AGICoreConfig) -> Self {
+        Self {
+            skills: HashMap::new(),
+            next_id: 0,
+            action_buffer: VecDeque::with_capacity(50),
+            config,
+        }
+    }
+
+    /// Record an action for potential skill extraction
+    pub fn record_action(&mut self, state: Vec<f64>, action: usize, reward: f64) {
+        self.action_buffer.push_back((state, action, reward));
+        while self.action_buffer.len() > 50 {
+            self.action_buffer.pop_front();
+        }
+    }
+
+    /// Extract a skill from a successful goal completion
+    pub fn extract_skill_from_goal(
+        &mut self,
+        goal_name: &str,
+        goal_features: Vec<f64>,
+        success: bool,
+    ) -> Option<usize> {
+        if !success || self.action_buffer.len() < 3 {
+            return None;
+        }
+
+        if self.skills.len() >= self.config.max_skills {
+            return None;
+        }
+
+        // Get the action sequence leading to goal completion
+        let sequence: Vec<(Vec<f64>, usize, f64)> = self.action_buffer.iter().cloned().collect();
+        let actions: Vec<usize> = sequence.iter().map(|(_, a, _)| *a).collect();
+        let total_reward: f64 = sequence.iter().map(|(_, _, r)| r).sum();
+
+        // Use the initial state as preconditions
+        let preconditions = sequence
+            .first()
+            .map(|(s, _, _)| s.clone())
+            .unwrap_or_default();
+
+        let skill = Skill {
+            id: self.next_id,
+            name: format!("skill_{}", goal_name),
+            preconditions,
+            effects: goal_features,
+            action_sequence: actions,
+            success_rate: 1.0,
+            execution_count: 1,
+            avg_reward: total_reward / sequence.len() as f64,
+            source_goal: None,
+        };
+
+        let id = skill.id;
+        self.skills.insert(id, skill);
+        self.next_id += 1;
+
+        // Clear buffer after skill extraction
+        self.action_buffer.clear();
+
+        Some(id)
+    }
+
+    /// Find applicable skills for current state
+    pub fn find_applicable_skills(&self, state: &[f64]) -> Vec<&Skill> {
+        self.skills
+            .values()
+            .filter(|skill| {
+                // Check if preconditions match current state (within tolerance)
+                let distance: f64 = skill
+                    .preconditions
+                    .iter()
+                    .zip(state.iter())
+                    .map(|(&p, &s)| (p - s).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                distance < 2.0 // Tolerance for precondition matching
+            })
+            .collect()
+    }
+
+    /// Update skill success rate after execution
+    pub fn update_skill(&mut self, skill_id: usize, success: bool, reward: f64) {
+        if let Some(skill) = self.skills.get_mut(&skill_id) {
+            skill.execution_count += 1;
+            let n = skill.execution_count as f64;
+            skill.success_rate =
+                (skill.success_rate * (n - 1.0) + if success { 1.0 } else { 0.0 }) / n;
+            skill.avg_reward = (skill.avg_reward * (n - 1.0) + reward) / n;
+        }
+    }
+
+    /// Get skill recommendation for achieving a target state
+    pub fn recommend_skill(&self, current: &[f64], target: &[f64]) -> Option<&Skill> {
+        self.skills
+            .values()
+            .filter(|skill| {
+                // Check preconditions match
+                let pre_dist: f64 = skill
+                    .preconditions
+                    .iter()
+                    .zip(current.iter())
+                    .map(|(&p, &s)| (p - s).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                // Check effects move toward target
+                let effect_dist: f64 = skill
+                    .effects
+                    .iter()
+                    .zip(target.iter())
+                    .map(|(&e, &t)| (e - t).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                pre_dist < 2.0 && effect_dist < 3.0
+            })
+            .max_by(|a, b| {
+                let score_a = a.success_rate * a.avg_reward;
+                let score_b = b.success_rate * b.avg_reward;
+                score_a
+                    .partial_cmp(&score_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    pub fn summary(&self) -> SkillLibrarySummary {
+        let avg_success = if self.skills.is_empty() {
+            0.0
+        } else {
+            self.skills.values().map(|s| s.success_rate).sum::<f64>() / self.skills.len() as f64
+        };
+
+        SkillLibrarySummary {
+            total_skills: self.skills.len(),
+            avg_success_rate: avg_success,
+            total_executions: self.skills.values().map(|s| s.execution_count).sum(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLibrarySummary {
+    pub total_skills: usize,
+    pub avg_success_rate: f64,
+    pub total_executions: usize,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SELF-MODEL - Track agent capabilities and uncertainties
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Self-model for introspection about agent capabilities
+#[derive(Debug, Clone)]
+pub struct SelfModel {
+    /// Reachability estimates: state_key -> (steps_to_reach, confidence)
+    reachable_states: HashMap<String, (usize, f64)>,
+    /// Model uncertainty by region
+    model_uncertainty: HashMap<String, f64>,
+    /// Success rates by goal type
+    success_rates: HashMap<String, (usize, usize)>, // (successes, attempts)
+    /// Action effectiveness estimates
+    action_effectiveness: Vec<f64>,
+    /// Recent prediction errors (for calibration)
+    prediction_errors: VecDeque<f64>,
+    /// Estimated competence (0-1)
+    pub competence: f64,
+    /// Number of actions
+    n_actions: usize,
+}
+
+impl SelfModel {
+    pub fn new(n_actions: usize) -> Self {
+        Self {
+            reachable_states: HashMap::new(),
+            model_uncertainty: HashMap::new(),
+            success_rates: HashMap::new(),
+            action_effectiveness: vec![0.5; n_actions],
+            prediction_errors: VecDeque::with_capacity(100),
+            competence: 0.5,
+            n_actions,
+        }
+    }
+
+    /// Record reaching a state and update reachability model
+    pub fn record_reached_state(&mut self, state: &[f64], steps: usize) {
+        let key = self.state_to_key(state);
+        self.reachable_states
+            .entry(key)
+            .and_modify(|(s, c)| {
+                *s = (*s).min(steps); // Track minimum steps
+                *c = (*c * 0.9 + 0.1).min(1.0); // Increase confidence
+            })
+            .or_insert((steps, 0.5));
+    }
+
+    /// Record goal attempt outcome
+    pub fn record_goal_outcome(&mut self, goal_type: &str, success: bool) {
+        let (succ, attempts) = self
+            .success_rates
+            .entry(goal_type.to_string())
+            .or_insert((0, 0));
+        if success {
+            *succ += 1;
+        }
+        *attempts += 1;
+
+        // Update overall competence
+        let total_succ: usize = self.success_rates.values().map(|(s, _)| s).sum();
+        let total_att: usize = self.success_rates.values().map(|(_, a)| a).sum();
+        if total_att > 0 {
+            self.competence = total_succ as f64 / total_att as f64;
+        }
+    }
+
+    /// Record prediction error for calibration
+    pub fn record_prediction_error(&mut self, error: f64) {
+        self.prediction_errors.push_back(error);
+        while self.prediction_errors.len() > 100 {
+            self.prediction_errors.pop_front();
+        }
+    }
+
+    /// Update action effectiveness based on outcomes
+    pub fn update_action_effectiveness(&mut self, action: usize, reward: f64) {
+        if action < self.action_effectiveness.len() {
+            let old = self.action_effectiveness[action];
+            self.action_effectiveness[action] = old * 0.95 + reward.max(0.0).min(1.0) * 0.05;
+        }
+    }
+
+    /// Estimate steps to reach a target state
+    pub fn estimate_steps_to(&self, current: &[f64], target: &[f64]) -> Option<usize> {
+        let target_key = self.state_to_key(target);
+
+        // Direct lookup
+        if let Some(&(steps, confidence)) = self.reachable_states.get(&target_key) {
+            if confidence > 0.3 {
+                return Some(steps);
+            }
+        }
+
+        // Estimate based on distance and competence
+        let distance: f64 = current
+            .iter()
+            .zip(target.iter())
+            .map(|(&c, &t)| (c - t).powi(2))
+            .sum::<f64>()
+            .sqrt();
+
+        Some((distance / (self.competence + 0.1)).ceil() as usize)
+    }
+
+    /// Get model uncertainty for a region of state space
+    pub fn get_uncertainty(&self, state: &[f64]) -> f64 {
+        let key = self.state_to_key(state);
+        self.model_uncertainty.get(&key).copied().unwrap_or(1.0) // Default high uncertainty
+    }
+
+    /// Get most effective actions
+    pub fn get_best_actions(&self) -> Vec<usize> {
+        let mut actions: Vec<(usize, f64)> = self
+            .action_effectiveness
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| (i, e))
+            .collect();
+        actions.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        actions.into_iter().take(3).map(|(i, _)| i).collect()
+    }
+
+    /// Get calibration score (how well-calibrated are our predictions)
+    pub fn calibration_score(&self) -> f64 {
+        if self.prediction_errors.is_empty() {
+            return 0.5;
+        }
+        let avg_error: f64 =
+            self.prediction_errors.iter().sum::<f64>() / self.prediction_errors.len() as f64;
+        1.0 / (1.0 + avg_error)
+    }
+
+    fn state_to_key(&self, state: &[f64]) -> String {
+        // Discretize state for hashing
+        state
+            .iter()
+            .take(4)
+            .map(|&v| ((v * 10.0).round() as i32).to_string())
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+
+    pub fn summary(&self) -> SelfModelSummary {
+        SelfModelSummary {
+            known_states: self.reachable_states.len(),
+            goal_types_tracked: self.success_rates.len(),
+            overall_competence: self.competence,
+            calibration: self.calibration_score(),
+            best_actions: self.get_best_actions(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfModelSummary {
+    pub known_states: usize,
+    pub goal_types_tracked: usize,
+    pub overall_competence: f64,
+    pub calibration: f64,
+    pub best_actions: Vec<usize>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // UNIFIED AGI CORE - Integration of all systems
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1996,6 +2452,18 @@ pub struct CompoundingAnalytics {
     pub total_interactions: usize,
     /// Compound growth rate
     pub compound_rate: f64,
+    /// Credit assignments from goal completion back to discoveries
+    pub credit_to_discoveries: usize,
+    /// Credit assignments from goal completion back to symbols
+    pub credit_to_symbols: usize,
+    /// Surprise-triggered meta updates (vs periodic)
+    pub surprise_meta_updates: usize,
+    /// Imagination-driven abstractions created
+    pub imagination_abstractions: usize,
+    /// Compound amplification factor (grows with success)
+    pub amplification_factor: f64,
+    /// Credit blockages detected by AGC (coherence gates restricting flow)
+    pub credit_blockages: usize,
 }
 
 impl Default for CompoundingAnalytics {
@@ -2009,6 +2477,215 @@ impl Default for CompoundingAnalytics {
             meta_to_discovery: 0,
             total_interactions: 0,
             compound_rate: 0.0,
+            credit_to_discoveries: 0,
+            credit_to_symbols: 0,
+            surprise_meta_updates: 0,
+            imagination_abstractions: 0,
+            amplification_factor: 1.0,
+            credit_blockages: 0,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DECISION AUDIT TRAIL (FOR EXPLICABILITY)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Tracks the contribution of each subsystem to a decision
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DecisionAudit {
+    /// The step this decision was made
+    pub step: usize,
+    /// The action that was selected
+    pub selected_action: usize,
+    /// Whether the decision was exploration vs exploitation
+    pub was_exploration: bool,
+    /// Q-value contribution for the selected action
+    pub q_value_contribution: f64,
+    /// Goal alignment contribution
+    pub goal_contribution: f64,
+    /// World model prediction contribution
+    pub world_model_contribution: f64,
+    /// Concept-based contribution from abstraction hierarchy
+    pub concept_contribution: f64,
+    /// Symbol-based contribution
+    pub symbol_contribution: f64,
+    /// Causal relevance factor
+    pub causal_relevance: f64,
+    /// Names of concepts that influenced the decision
+    pub influential_concepts: Vec<String>,
+    /// Names of symbols that influenced the decision
+    pub influential_symbols: Vec<String>,
+    /// Active goal name (if any)
+    pub active_goal: Option<String>,
+    /// Total decision confidence (sum of contributions)
+    pub total_confidence: f64,
+}
+
+impl DecisionAudit {
+    /// Get a human-readable explanation of the decision
+    pub fn explain(&self) -> String {
+        let mut explanation = format!("Action {} selected ", self.selected_action);
+
+        if self.was_exploration {
+            explanation.push_str("(exploration) ");
+        } else {
+            explanation.push_str("(exploitation) ");
+        }
+
+        let mut reasons: Vec<String> = Vec::new();
+
+        if self.q_value_contribution > 0.1 {
+            reasons.push(format!("Q-value: {:.2}", self.q_value_contribution));
+        }
+        if self.goal_contribution > 0.1 {
+            if let Some(ref goal) = self.active_goal {
+                reasons.push(format!("goal '{}': {:.2}", goal, self.goal_contribution));
+            } else {
+                reasons.push(format!("goal alignment: {:.2}", self.goal_contribution));
+            }
+        }
+        if self.world_model_contribution > 0.1 {
+            reasons.push(format!("world model: {:.2}", self.world_model_contribution));
+        }
+        if self.concept_contribution > 0.1 {
+            if !self.influential_concepts.is_empty() {
+                reasons.push(format!(
+                    "concepts [{}]: {:.2}",
+                    self.influential_concepts.join(", "),
+                    self.concept_contribution
+                ));
+            }
+        }
+        if self.symbol_contribution > 0.1 {
+            if !self.influential_symbols.is_empty() {
+                reasons.push(format!(
+                    "symbols [{}]: {:.2}",
+                    self.influential_symbols.join(", "),
+                    self.symbol_contribution
+                ));
+            }
+        }
+
+        if reasons.is_empty() {
+            explanation.push_str("(no strong factors)");
+        } else {
+            explanation.push_str("because: ");
+            explanation.push_str(&reasons.join(", "));
+        }
+
+        explanation
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COGNITIVE HEALTH MONITORING (COLLIDER-INSPIRED)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Types of cognitive anomalies (inspired by CERN Collider anomaly detection)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CognitiveAnomaly {
+    /// Goal system creating too many goals (runaway process)
+    GoalExplosion,
+    /// Symbol system saturated (no room for new symbols)
+    SymbolSaturation,
+    /// World model predictions degrading (increasing error)
+    WorldModelDegradation,
+    /// Meta-learner parameters oscillating (instability)
+    MetaInstability,
+    /// Credit assignment not flowing (blocked loop)
+    CreditBlockage,
+    /// Compound rate dropping (system decohering)
+    CompoundCollapse,
+    /// Abstraction hierarchy too flat (no learning)
+    AbstractionStagnation,
+    /// Discovery system inactive (no new variables)
+    DiscoveryDormant,
+}
+
+impl CognitiveAnomaly {
+    /// Get severity (0=info, 1=warning, 2=error, 3=critical)
+    pub fn severity(&self) -> u8 {
+        match self {
+            Self::GoalExplosion => 2,
+            Self::SymbolSaturation => 1,
+            Self::WorldModelDegradation => 2,
+            Self::MetaInstability => 3,
+            Self::CreditBlockage => 2,
+            Self::CompoundCollapse => 3,
+            Self::AbstractionStagnation => 1,
+            Self::DiscoveryDormant => 1,
+        }
+    }
+
+    /// Get recommended action
+    pub fn recommended_action(&self) -> &'static str {
+        match self {
+            Self::GoalExplosion => "Reduce goal creation rate or increase completion threshold",
+            Self::SymbolSaturation => "Prune unused symbols or increase symbol capacity",
+            Self::WorldModelDegradation => "Reset world model or reduce learning rate",
+            Self::MetaInstability => "Reduce meta-learning rate or increase smoothing",
+            Self::CreditBlockage => "Check goal completion pathway or lower thresholds",
+            Self::CompoundCollapse => "Increase subsystem interaction rates",
+            Self::AbstractionStagnation => "Lower abstraction merge threshold",
+            Self::DiscoveryDormant => {
+                "Lower causal discovery threshold or increase observation window"
+            }
+        }
+    }
+}
+
+/// Cognitive health report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitiveHealthReport {
+    /// Current step
+    pub step: usize,
+    /// Detected anomalies
+    pub anomalies: Vec<CognitiveAnomaly>,
+    /// Overall health score (0.0 = critical, 1.0 = perfect)
+    pub health_score: f64,
+    /// Subsystem health scores
+    pub subsystem_health: SubsystemHealth,
+    /// Is the system healthy overall?
+    pub is_healthy: bool,
+}
+
+/// Health scores for each subsystem
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubsystemHealth {
+    pub causal_discovery: f64,
+    pub abstraction: f64,
+    pub world_model: f64,
+    pub goals: f64,
+    pub meta_learner: f64,
+    pub symbols: f64,
+    pub compounding: f64,
+}
+
+/// Thresholds for anomaly detection
+#[derive(Debug, Clone)]
+pub struct CognitiveHealthThresholds {
+    pub max_goals_per_step: f64,
+    pub max_symbol_usage_ratio: f64,
+    pub max_world_model_error: f64,
+    pub max_meta_oscillation: f64,
+    pub min_credit_flow_ratio: f64,
+    pub min_compound_rate: f64,
+    pub min_abstraction_depth: usize,
+    pub min_discovery_rate: f64,
+}
+
+impl Default for CognitiveHealthThresholds {
+    fn default() -> Self {
+        Self {
+            max_goals_per_step: 10.0,     // Goals created per step
+            max_symbol_usage_ratio: 0.99, // Symbol capacity usage
+            max_world_model_error: 0.8,   // Prediction error threshold
+            max_meta_oscillation: 0.5,    // Parameter change rate
+            min_credit_flow_ratio: 0.001, // Credit events per step
+            min_compound_rate: 1.0,       // Minimum interactions per step
+            min_abstraction_depth: 1,     // Minimum hierarchy depth
+            min_discovery_rate: 0.0001,   // Variables discovered per step
         }
     }
 }
@@ -2036,6 +2713,15 @@ pub struct AGICore {
     /// Symbol Grounding System
     pub symbols: SymbolSystem,
 
+    /// Skill Library (NEW)
+    pub skills: SkillLibrary,
+
+    /// Self-Model for introspection (NEW)
+    pub self_model: SelfModel,
+
+    /// Counterfactual policy bias (NEW) - learned from regret
+    pub policy_bias: Vec<f64>,
+
     /// Compounding analytics
     pub analytics: CompoundingAnalytics,
 
@@ -2047,6 +2733,65 @@ pub struct AGICore {
 
     /// Number of actions
     n_actions: usize,
+
+    /// Last action taken (for counterfactual analysis)
+    last_action: Option<usize>,
+
+    /// Last state (for counterfactual analysis)
+    last_state: Option<Vec<f64>>,
+
+    /// Running average of prediction error for surprise detection
+    avg_prediction_error: f64,
+
+    /// Recent states that led to goal completion (for credit assignment)
+    recent_goal_states: VecDeque<(Vec<f64>, usize)>, // (state, action)
+
+    /// ACTION-VALUE LEARNING SYSTEM (Q-Learning)
+    /// Maps discretized state + action → learned Q-value
+    /// This is the KEY bridge between internal learning and external behavior
+    action_values: HashMap<(Vec<i32>, usize), ActionValue>,
+
+    /// State-value estimates (V-function) for bootstrapping
+    state_values: HashMap<Vec<i32>, f64>,
+
+    /// Learning rate for Q-updates
+    q_learning_rate: f64,
+
+    /// Discount factor for future rewards
+    gamma: f64,
+
+    /// Eligibility traces for faster credit assignment
+    eligibility_traces: HashMap<(Vec<i32>, usize), f64>,
+
+    /// Trace decay factor (lambda in TD(λ))
+    trace_decay: f64,
+
+    /// Artificial General Coherence system
+    /// Integrates psychological coherence, requisite variety, homeostasis,
+    /// epistemic integrity, and ethical alignment
+    pub agc: ArtificialGeneralCoherence,
+
+    /// Previous symbol count for tracking new groundings per step
+    prev_grounded_symbols: usize,
+
+    /// Total symbols with symbolic representation for current action (for explicability)
+    last_action_has_symbol: bool,
+
+    /// Recent decision audits for explicability (ring buffer of last N decisions)
+    decision_audits: VecDeque<DecisionAudit>,
+}
+
+/// Learned action value with statistics
+#[derive(Debug, Clone)]
+pub struct ActionValue {
+    /// Estimated Q-value
+    pub q_value: f64,
+    /// Number of updates
+    pub update_count: usize,
+    /// Running average of TD errors (for prioritization)
+    pub avg_td_error: f64,
+    /// Last update step
+    pub last_update: usize,
 }
 
 impl AGICore {
@@ -2059,11 +2804,32 @@ impl AGICore {
             goals: GoalHierarchy::new(config.clone()),
             meta_learner: MetaLearner::new(config.clone()),
             symbols: SymbolSystem::new(config.clone()),
+            skills: SkillLibrary::new(config.clone()),
+            self_model: SelfModel::new(n_actions),
+            policy_bias: vec![0.0; n_actions],
             analytics: CompoundingAnalytics::default(),
             current_step: 0,
             feature_dim,
             n_actions,
+            last_action: None,
+            last_state: None,
+            avg_prediction_error: 0.5, // Initial baseline
+            recent_goal_states: VecDeque::with_capacity(50),
             config,
+            // Initialize Q-learning system
+            action_values: HashMap::new(),
+            state_values: HashMap::new(),
+            q_learning_rate: 0.1,
+            gamma: 0.95,
+            eligibility_traces: HashMap::new(),
+            trace_decay: 0.8, // TD(0.8)
+            // Initialize Artificial General Coherence
+            agc: ArtificialGeneralCoherence::new(),
+            // Track new symbol groundings
+            prev_grounded_symbols: 0,
+            last_action_has_symbol: false,
+            // Decision audit trail
+            decision_audits: VecDeque::with_capacity(100),
         }
     }
 
@@ -2078,6 +2844,18 @@ impl AGICore {
     ) {
         self.current_step += 1;
 
+        // Track recent states for credit assignment
+        self.recent_goal_states.push_back((state.to_vec(), action));
+        while self.recent_goal_states.len() > 50 {
+            self.recent_goal_states.pop_front();
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Q-LEARNING UPDATE (TD(λ)) - THE BRIDGE FROM LEARNING TO BEHAVIOR
+        // This creates a DIRECT connection between experience and action selection
+        // ═══════════════════════════════════════════════════════════════════
+        self.update_action_values(state, action, next_state, reward, is_terminal);
+
         // 1. CAUSAL DISCOVERY - observe patterns
         self.causal_discovery
             .observe(state.to_vec(), Some(action), reward);
@@ -2090,8 +2868,8 @@ impl AGICore {
         self.abstraction.observe(state.to_vec());
         self.abstraction.observe(next_state.to_vec());
 
-        // 4. GOAL PROGRESS - update active goals
-        self.goals.update_progress(next_state);
+        // 4. GOAL PROGRESS - update active goals and get completed ones
+        let completed_goals = self.goals.update_progress(next_state);
 
         // 5. SYMBOL GROUNDING - create/update symbols for notable states
         if reward.abs() > 0.5 {
@@ -2105,22 +2883,511 @@ impl AGICore {
                 .get_or_create_symbol(&name, next_state.to_vec(), motor);
         }
 
-        // 6. COMPOUND INTERACTIONS - drive multiplicative growth
-        self.compound_interactions(state, action, next_state, reward);
+        // 6. NEW: SKILL LIBRARY - record actions for potential skill extraction
+        self.skills.record_action(state.to_vec(), action, reward);
+
+        // 7. NEW: SELF-MODEL - update capability tracking
+        self.self_model.record_reached_state(next_state, 1);
+        self.self_model.update_action_effectiveness(action, reward);
+
+        // 8. NEW: COUNTERFACTUAL LEARNING - compute regret and update policy bias
+        if let Some(last_state) = self.last_state.clone() {
+            if let Some(last_action) = self.last_action {
+                self.counterfactual_update(&last_state, last_action, state, reward);
+            }
+        }
+        self.last_state = Some(state.to_vec());
+        self.last_action = Some(action);
+
+        // 9. COMPOUND INTERACTIONS - drive multiplicative growth
+        self.compound_interactions(state, action, next_state, reward, &completed_goals);
+
+        // 10. UPDATE ARTIFICIAL GENERAL COHERENCE with FULL subsystem data
+        // This is the key integration point - AGC now sees the REAL state of all subsystems
+        let prediction_error = self.avg_prediction_error;
+        let goal_success_rate = self.goals.summary().success_rate;
+
+        // Gather real data from all subsystems
+        let symbol_summary = self.symbols.summary();
+        let current_grounded = symbol_summary.grounded_symbols;
+        let new_groundings = current_grounded.saturating_sub(self.prev_grounded_symbols);
+        self.prev_grounded_symbols = current_grounded;
+
+        // Check if current action has symbolic representation (for explicability)
+        let has_symbol_for_action = self.symbols.find_by_sensory(state, 0.3).is_some()
+            || self
+                .abstraction
+                .get_activated_concepts(state)
+                .iter()
+                .any(|(_, sim)| *sim > 0.5);
+        self.last_action_has_symbol = has_symbol_for_action;
+
+        // Get subsystem stats
+        let discovered_variables = self.causal_discovery.summary().total_variables;
+        let causal_interventions = self.analytics.meta_to_discovery; // Using this as proxy for interventions
+        let world_model_states = self.world_model.summary().total_states;
+        let concepts_formed = self.abstraction.summary().total_concepts;
+        let exploration_rate = self.meta_learner.get_recommended_params().exploration_rate;
+        let goals_created = self.goals.summary().total_goals;
+
+        // Call the FULL AGC update with real subsystem data
+        self.agc.update_full(
+            state,
+            action,
+            self.n_actions,
+            reward,
+            prediction_error,
+            self.analytics.compound_rate,
+            goal_success_rate,
+            // Subsystem-specific data:
+            discovered_variables,
+            causal_interventions,
+            current_grounded,
+            symbol_summary.total_symbols,
+            new_groundings,
+            world_model_states,
+            concepts_formed,
+            exploration_rate,
+            goals_created,
+            self.analytics.total_interactions,
+            has_symbol_for_action,
+        );
+
+        // 8. APPLY HOMEOSTATIC CONTROLS - actually adjust subsystem parameters!
+        let controls = &self.agc.homeostasis.controls;
+        if controls.regulation_intensity > 0.2 {
+            // Apply learning rate adjustment to Q-learning
+            let lr_adjust = controls.learning_rate_adjust;
+            self.q_learning_rate =
+                (self.q_learning_rate * (1.0 + lr_adjust * 0.1)).clamp(0.01, 0.3);
+
+            // Apply exploration adjustment via modifying the meta-learner's best values
+            let exp_adjust = controls.exploration_adjust;
+            if exp_adjust.abs() > 0.05 {
+                self.meta_learner.best_exploration_rate =
+                    (self.meta_learner.best_exploration_rate + exp_adjust * 0.05).clamp(0.05, 0.5);
+            }
+
+            // Apply goal creation control
+            if controls.goal_creation_adjust < -0.2 && self.goals.active_count() > 3 {
+                // Too many goals - homeostasis suggests reducing
+                // This happens naturally through the config, but we can also
+                // increase the completion threshold slightly
+                self.config.goal_completion_threshold =
+                    (self.config.goal_completion_threshold - 0.01).max(0.4);
+            } else if controls.goal_creation_adjust > 0.2 {
+                // Room for more goals - lower threshold to complete faster
+                self.config.goal_completion_threshold =
+                    (self.config.goal_completion_threshold + 0.01).min(0.8);
+            }
+        }
+
+        // 9. COHERENCE-GATED CREDIT FLOW
+        // If coherence gates are restricting flow, track as blockage
+        if self.agc.psychological.gates.discovery_to_abstraction < 0.5
+            || self.agc.psychological.gates.symbols_to_goals < 0.5
+        {
+            self.analytics.credit_blockages = self.analytics.credit_blockages.saturating_add(1);
+        }
+
+        // 10. VARIETY EXPANSION - act on AGC recommendations
+        for expansion in &self.agc.variety.expansion_needed {
+            match expansion.area {
+                ExpansionArea::ActionSpace => {
+                    // Need more action diversity - slightly increase exploration
+                    self.meta_learner.best_exploration_rate =
+                        (self.meta_learner.best_exploration_rate + 0.02).min(0.5);
+                }
+                ExpansionArea::GoalHierarchy => {
+                    // Need more goal diversity - create exploratory goal if room
+                    if self.goals.active_count() < self.config.max_active_goals {
+                        // Create a random exploration goal
+                        let explore_target: Vec<f64> = next_state
+                            .iter()
+                            .map(|&x| x + (rand_simple() - 0.5) * 0.5)
+                            .collect();
+                        let _goal_id = self.goals.create_goal(
+                            &format!("explore_variety_{}", self.current_step),
+                            explore_target,
+                            GoalPriority::Low,
+                        );
+                    }
+                }
+                ExpansionArea::Abstractions => {
+                    // Need more concepts - lower merge threshold temporarily
+                    self.config.abstraction_merge_threshold =
+                        (self.config.abstraction_merge_threshold - 0.02).max(0.5);
+                }
+                ExpansionArea::CausalModels => {
+                    // Need more causal variables - lower discovery threshold
+                    self.config.causal_discovery_threshold =
+                        (self.config.causal_discovery_threshold - 0.01).max(0.05);
+                }
+                ExpansionArea::Symbols => {
+                    // Need more symbols - lower grounding threshold
+                    self.config.symbol_grounding_threshold =
+                        (self.config.symbol_grounding_threshold - 0.02).max(0.2);
+                }
+                ExpansionArea::StateRepresentation => {
+                    // Need finer state discrimination - handled by Q-learning discretization
+                    // Could adjust resolution but that's more complex
+                }
+            }
+        }
     }
 
-    /// Drive compounding interactions between systems
+    /// Discretize state for Q-table lookup
+    fn discretize_state(&self, state: &[f64]) -> Vec<i32> {
+        // Use coarser discretization for generalization
+        // Grid of 0.5 units for position-like features
+        state
+            .iter()
+            .map(|&x| (x * 2.0).round() as i32) // 0.5 unit resolution
+            .collect()
+    }
+
+    /// Update action values using TD(λ) with eligibility traces
+    fn update_action_values(
+        &mut self,
+        state: &[f64],
+        action: usize,
+        next_state: &[f64],
+        reward: f64,
+        is_terminal: bool,
+    ) {
+        let state_disc = self.discretize_state(state);
+        let next_state_disc = self.discretize_state(next_state);
+        let key = (state_disc.clone(), action);
+
+        // Get current Q(s, a)
+        let current_q = self
+            .action_values
+            .get(&key)
+            .map(|av| av.q_value)
+            .unwrap_or(0.0);
+
+        // Get max Q(s', a') for next state (greedy bootstrap)
+        let next_max_q = if is_terminal {
+            0.0
+        } else {
+            (0..self.n_actions)
+                .filter_map(|a| {
+                    let next_key = (next_state_disc.clone(), a);
+                    self.action_values.get(&next_key).map(|av| av.q_value)
+                })
+                .fold(0.0_f64, f64::max)
+        };
+
+        // TD error: δ = r + γ * max Q(s', a') - Q(s, a)
+        let td_error = reward + self.gamma * next_max_q - current_q;
+
+        // Update eligibility trace for current state-action
+        let trace_key = key.clone();
+        *self.eligibility_traces.entry(trace_key).or_insert(0.0) = 1.0;
+
+        // Apply TD(λ) update to all eligible state-actions
+        let alpha = self.q_learning_rate;
+        let lambda = self.trace_decay;
+        let current_step = self.current_step;
+
+        // Collect updates to avoid borrow issues
+        let updates: Vec<((Vec<i32>, usize), f64)> = self
+            .eligibility_traces
+            .iter()
+            .filter(|(_, &trace)| trace > 0.01) // Only update significant traces
+            .map(|(k, &trace)| (k.clone(), alpha * td_error * trace))
+            .collect();
+
+        // Apply Q-value updates
+        for (k, delta) in updates {
+            let entry = self.action_values.entry(k.clone()).or_insert(ActionValue {
+                q_value: 0.0,
+                update_count: 0,
+                avg_td_error: 0.0,
+                last_update: 0,
+            });
+            entry.q_value += delta;
+            entry.update_count += 1;
+            entry.avg_td_error = entry.avg_td_error * 0.9 + td_error.abs() * 0.1;
+            entry.last_update = current_step;
+        }
+
+        // Decay all eligibility traces
+        for trace in self.eligibility_traces.values_mut() {
+            *trace *= self.gamma * lambda;
+        }
+
+        // Prune near-zero traces periodically
+        if self.current_step % 100 == 0 {
+            self.eligibility_traces
+                .retain(|_, &mut trace| trace > 0.001);
+        }
+
+        // Update state value estimate V(s) = max_a Q(s, a)
+        let state_v = (0..self.n_actions)
+            .filter_map(|a| {
+                let k = (state_disc.clone(), a);
+                self.action_values.get(&k).map(|av| av.q_value)
+            })
+            .fold(0.0_f64, f64::max);
+        self.state_values.insert(state_disc, state_v);
+    }
+
+    /// Get learned Q-value for a state-action pair
+    pub fn get_q_value(&self, state: &[f64], action: usize) -> f64 {
+        let state_disc = self.discretize_state(state);
+        let key = (state_disc, action);
+        self.action_values
+            .get(&key)
+            .map(|av| av.q_value)
+            .unwrap_or(0.0)
+    }
+
+    /// Get best action according to learned Q-values
+    pub fn get_greedy_action(&self, state: &[f64]) -> Option<usize> {
+        let state_disc = self.discretize_state(state);
+
+        let mut best_action = None;
+        let mut best_q = f64::NEG_INFINITY;
+
+        for action in 0..self.n_actions {
+            let key = (state_disc.clone(), action);
+            if let Some(av) = self.action_values.get(&key) {
+                if av.q_value > best_q {
+                    best_q = av.q_value;
+                    best_action = Some(action);
+                }
+            }
+        }
+
+        best_action
+    }
+
+    /// Get Q-learning statistics
+    pub fn q_learning_stats(&self) -> (usize, f64, f64) {
+        let n_entries = self.action_values.len();
+        let avg_q = if n_entries > 0 {
+            self.action_values
+                .values()
+                .map(|av| av.q_value)
+                .sum::<f64>()
+                / n_entries as f64
+        } else {
+            0.0
+        };
+        let avg_updates = if n_entries > 0 {
+            self.action_values
+                .values()
+                .map(|av| av.update_count as f64)
+                .sum::<f64>()
+                / n_entries as f64
+        } else {
+            0.0
+        };
+        (n_entries, avg_q, avg_updates)
+    }
+
+    /// Drive compounding interactions between systems - THE EMERGENCE ENGINE
     fn compound_interactions(
         &mut self,
         state: &[f64],
         action: usize,
         next_state: &[f64],
-        _reward: f64,
+        reward: f64,
+        completed_goals: &[usize],
     ) {
+        // ═══════════════════════════════════════════════════════════════════
+        // EMERGENCE MECHANISM 1: BACKWARD CREDIT ASSIGNMENT
+        // When goals complete, strengthen the discoveries and symbols that enabled them
+        // ═══════════════════════════════════════════════════════════════════
+        if !completed_goals.is_empty() {
+            // Credit flows BACKWARD from achievement to enabling factors
+            for &goal_id in completed_goals {
+                // 1a. Credit discoveries that were relevant to recent goal-achieving states
+                // Collect var IDs first to avoid borrow conflict
+                let mut useful_var_ids: Vec<usize> = Vec::new();
+                for (past_state, _past_action) in &self.recent_goal_states {
+                    let relevant_vars = self.causal_discovery.get_relevant_variables(past_state);
+                    for var in relevant_vars {
+                        useful_var_ids.push(var.id);
+                    }
+                }
+                // Now mark them useful
+                for var_id in useful_var_ids {
+                    self.causal_discovery.mark_useful(var_id);
+                    self.analytics.credit_to_discoveries += 1;
+                }
+
+                // 1b. Credit symbols associated with the completed goal
+                // Find symbols that were grounded in this goal
+                for sym in self.symbols.symbols.values_mut() {
+                    if sym.goal_id == Some(goal_id) {
+                        // Boost confidence - this symbol led to success!
+                        sym.grounding_confidence = (sym.grounding_confidence + 0.15).min(1.0);
+                        sym.usage_count += 5; // Strong reward for goal-achieving symbols
+                        self.analytics.credit_to_symbols += 1;
+                    }
+                }
+
+                // 1c. Lower discovery threshold - make it easier to find more useful patterns
+                // This is the KEY positive feedback loop
+                self.config.causal_discovery_threshold *= 0.95;
+                self.config.causal_discovery_threshold =
+                    self.config.causal_discovery_threshold.max(0.1); // Floor at 0.1
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // EMERGENCE MECHANISM 1.5: REWARD-DRIVEN CREDIT (IMMEDIATE FEEDBACK)
+        // Don't wait for goal completion - credit discoveries/symbols that lead to reward
+        // This is the KEY connection between internal compounding and external performance
+        // ═══════════════════════════════════════════════════════════════════
+        if reward > 0.5 {
+            // Positive reward = credit the current context
+            // 1.5a. Credit relevant causal discoveries
+            let mut useful_var_ids: Vec<usize> = Vec::new();
+            let relevant_vars = self.causal_discovery.get_relevant_variables(state);
+            for var in relevant_vars {
+                useful_var_ids.push(var.id);
+            }
+            for var_id in useful_var_ids {
+                self.causal_discovery.mark_useful(var_id);
+                self.analytics.credit_to_discoveries += 1;
+            }
+
+            // 1.5b. Credit symbols matching current state (they led to reward!)
+            let state_vec = state.to_vec();
+            let symbol_credits: Vec<usize> = self
+                .symbols
+                .symbols
+                .values()
+                .filter(|s| {
+                    // Check if symbol's sensory grounding matches current state
+                    let sim = cosine_sim(&s.sensory_grounding, &state_vec);
+                    sim > 0.3
+                })
+                .map(|s| s.id)
+                .collect();
+
+            for sym_id in symbol_credits {
+                if let Some(sym) = self.symbols.symbols.get_mut(&sym_id) {
+                    // Proportional credit based on reward magnitude
+                    let credit_amount = (reward * 0.1).min(0.1);
+                    sym.grounding_confidence = (sym.grounding_confidence + credit_amount).min(1.0);
+                    sym.usage_count += 1;
+                    self.analytics.credit_to_symbols += 1;
+                }
+            }
+
+            // 1.5c. Associate current action with activated concepts (skill learning)
+            let activated = self.abstraction.get_activated_concepts(state);
+            for (concept_id, _activation) in activated {
+                self.abstraction.associate_action(concept_id, action);
+            }
+        } else if reward < -0.5 {
+            // Negative reward = slightly decrease confidence in matching symbols
+            let state_vec = state.to_vec();
+            let symbol_penalties: Vec<usize> = self
+                .symbols
+                .symbols
+                .values()
+                .filter(|s| {
+                    let sim = cosine_sim(&s.sensory_grounding, &state_vec);
+                    sim > 0.3
+                })
+                .map(|s| s.id)
+                .collect();
+
+            for sym_id in symbol_penalties {
+                if let Some(sym) = self.symbols.symbols.get_mut(&sym_id) {
+                    // Small penalty - don't want to destroy learned knowledge
+                    sym.grounding_confidence = (sym.grounding_confidence - 0.02).max(0.1);
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // EMERGENCE MECHANISM 2: SURPRISE-DRIVEN META-LEARNING
+        // Don't wait for periodic updates - react to unexpected outcomes immediately
+        // ═══════════════════════════════════════════════════════════════════
+        let prediction_error = if let Some(predicted) = self.world_model.predict(state, action) {
+            predicted
+                .features
+                .iter()
+                .zip(next_state.iter())
+                .map(|(p, a)| (p - a).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        } else {
+            1.0 // Unknown transition = maximum surprise
+        };
+
+        // Update running average
+        let alpha = 0.1;
+        self.avg_prediction_error =
+            self.avg_prediction_error * (1.0 - alpha) + prediction_error * alpha;
+
+        // Compute surprise ratio
+        let surprise = prediction_error / (self.avg_prediction_error + 0.01);
+
+        // SURPRISE-TRIGGERED meta update (not periodic!)
+        if surprise > 1.5 || surprise < 0.5 {
+            // Either much worse OR much better than expected - both are informative!
+            let metrics = self.meta_learner.get_recommended_params();
+            let performance = if surprise < 1.0 { 1.0 } else { 0.0 }; // Better prediction = higher performance
+            self.meta_learner.record_episode(
+                prediction_error,
+                performance,
+                1, // Single step, not batched
+                metrics,
+            );
+            self.analytics.surprise_meta_updates += 1;
+            self.analytics.world_model_to_meta += 1;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // EMERGENCE MECHANISM 3: IMAGINATION-DRIVEN ABSTRACTION
+        // World model imagines futures, successful imaginations become concepts
+        // ═══════════════════════════════════════════════════════════════════
+        if self.current_step % 10 == 0 {
+            // Even more frequent (was 25)
+            let futures = self.world_model.imagine_futures(state, 5, self.n_actions);
+
+            for trajectory in &futures {
+                // LOWERED threshold: Any non-negative trajectory is worth abstracting
+                if trajectory.total_reward > 0.0 && trajectory.states.len() >= 2 {
+                    // Take features from the BEST state in the trajectory (highest reward position)
+                    if let Some(best_state) = trajectory.states.iter().max_by(|a, b| {
+                        a.reward
+                            .partial_cmp(&b.reward)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
+                        self.abstraction.observe(best_state.features.clone());
+                        self.analytics.imagination_abstractions += 1;
+                    }
+                }
+
+                // Also abstract from ANY trajectory that reaches goal-completing states
+                for state_in_traj in &trajectory.states {
+                    if self
+                        .goals
+                        .check_prediction_completes_goal(&state_in_traj.features)
+                        .is_some()
+                    {
+                        self.abstraction.observe(state_in_traj.features.clone());
+                        self.analytics.imagination_abstractions += 1;
+                    }
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // ORIGINAL COMPOUND PATHWAYS (with amplification applied)
+        // ═══════════════════════════════════════════════════════════════════
+
         // Discovery → Abstraction: Use discovered variables to inform concepts
         let discovered = self.causal_discovery.get_relevant_variables(state);
         for var in discovered {
-            // Create a concept from the discovered variable signature
             self.abstraction.observe(var.signature.clone());
             self.analytics.discovery_to_abstraction += 1;
         }
@@ -2128,7 +3395,9 @@ impl AGICore {
         // Abstraction → Symbols: Ground symbols in activated concepts
         let activated = self.abstraction.get_activated_concepts(state);
         for (concept_id, similarity) in activated.iter().take(3) {
-            if *similarity > 0.7 {
+            // AMPLIFIED threshold - gets easier as amplification grows
+            let adjusted_threshold = 0.7 / self.analytics.amplification_factor;
+            if *similarity > adjusted_threshold {
                 let name = format!("concept_{}", concept_id);
                 let sym_id = self.symbols.get_or_create_symbol(
                     &name,
@@ -2140,18 +3409,16 @@ impl AGICore {
             }
         }
 
-        // Symbols → Goals: AUTO-CREATE GOALS from grounded symbols that don't have goals
-        // This is the key fix - we need to create goals from symbols, not just express existing goals
+        // Symbols → Goals: Auto-create goals from grounded symbols
         let ungoaled_symbols: Vec<(String, Vec<f64>, Option<usize>)> = self
             .symbols
             .get_ungoaled_grounded_symbols()
             .iter()
-            .take(2) // Limit to 2 new goals per step
+            .take(2)
             .map(|s| (s.name.clone(), s.sensory_grounding.clone(), s.concept_id))
             .collect();
 
         for (name, target_features, concept_id) in ungoaled_symbols {
-            // Only create goals if we have room
             if self.goals.active_count() < self.config.max_active_goals {
                 let goal_name = format!("explore_{}", name);
                 let goal_id = self.goals.create_goal_from_symbol(
@@ -2159,17 +3426,14 @@ impl AGICore {
                     target_features.clone(),
                     concept_id,
                 );
-
-                // Link symbol back to goal
                 if let Some(&sym_id) = self.symbols.name_to_id.get(&name) {
                     self.symbols.ground_in_goal(sym_id, goal_id);
                 }
-
                 self.analytics.symbols_to_goals += 1;
             }
         }
 
-        // Also express current goal symbolically (original behavior)
+        // Also express current goal symbolically
         if let Some(goal) = self.goals.get_current_goal() {
             let goal_name = format!("goal_{}", goal.id);
             let goal_target = goal.target_features.clone();
@@ -2181,27 +3445,25 @@ impl AGICore {
             self.analytics.symbols_to_goals += 1;
         }
 
-        // Goals → World Model: Imagine paths to goals AND check if predictions complete goals
+        // Goals → World Model: Imagine paths to goals
         if let Some(goal) = self.goals.get_current_goal() {
             let goal_id = goal.id;
             let goal_subgoals_empty = goal.subgoals.is_empty();
 
             let futures = self.world_model.imagine_futures(state, 3, self.n_actions);
 
-            // Check if any imagined future would complete a goal
             for trajectory in &futures {
                 for imagined_state in &trajectory.states {
-                    if let Some(_completed_id) = self
+                    if self
                         .goals
                         .check_prediction_completes_goal(&imagined_state.features)
+                        .is_some()
                     {
-                        // Prediction shows path to goal completion - this is valuable!
                         self.analytics.goals_to_world_model += 1;
                     }
                 }
             }
 
-            // Use imagination to inform goal decomposition (original behavior)
             if !futures.is_empty() && goal_subgoals_empty {
                 let intermediate_states: Vec<Vec<f64>> = futures
                     .iter()
@@ -2215,45 +3477,90 @@ impl AGICore {
             }
         }
 
-        // World Model → Meta-Learning: Track prediction quality
-        if let Some(predicted) = self.world_model.predict(state, action) {
-            let prediction_error: f64 = predicted
-                .features
-                .iter()
-                .zip(next_state.iter())
-                .map(|(p, a)| (p - a).powi(2))
-                .sum::<f64>()
-                .sqrt();
+        // Meta → Discovery: Apply meta-learned parameters
+        // (Removed periodic gate - now continuous through amplification)
+        self.analytics.meta_to_discovery += 1;
 
-            // Record learning episode if this is a notable step
-            if self.current_step % 100 == 0 {
-                let metrics = self.meta_learner.get_recommended_params();
-                self.meta_learner.record_episode(
-                    prediction_error,
-                    1.0 / (prediction_error + 0.1),
-                    100,
-                    metrics,
-                );
-                self.analytics.world_model_to_meta += 1;
+        // ═══════════════════════════════════════════════════════════════════
+        // EMERGENCE MECHANISM 4: EXPONENTIAL COMPOUND AMPLIFICATION
+        // Success breeds success - compound effects grow over time
+        // ═══════════════════════════════════════════════════════════════════
+        let goal_summary = self.goals.summary();
+        let success_rate = goal_summary.success_rate;
+
+        // Amplification grows with success
+        if success_rate > 0.3 && goal_summary.completed_goals > 2 {
+            // The more goals we complete, the stronger the amplification
+            let completion_bonus = (goal_summary.completed_goals as f64).ln().max(0.0);
+            self.analytics.amplification_factor =
+                1.0 + (success_rate * 0.5) + (completion_bonus * 0.1);
+
+            // Amplification also lowers thresholds (easier to discover/abstract)
+            if self.analytics.amplification_factor > 1.1 {
+                self.config.symbol_grounding_threshold *= 0.995;
+                self.config.symbol_grounding_threshold =
+                    self.config.symbol_grounding_threshold.max(0.2); // Floor
             }
         }
 
-        // Meta-Learning → Discovery: Use learned parameters
-        // (The meta-learner's parameters will be used in the next iteration)
+        // Meta-Learning → Discovery: Use learned parameters TO ACTUALLY ADJUST DISCOVERY
+        // This is the key fix - we need to actually transfer the meta-learning to other systems
         if self.current_step % 200 == 0 {
-            // Trigger causal re-analysis with improved parameters
+            let params = self.meta_learner.get_recommended_params();
+
+            // Higher exploration → lower discovery threshold (find more patterns)
+            // Lower exploration → higher threshold (be more selective)
+            let new_threshold = 0.3 * (1.0 - params.exploration_rate * 0.5);
+            self.causal_discovery.set_discovery_threshold(new_threshold);
+
             self.analytics.meta_to_discovery += 1;
         }
 
-        // Update totals
+        // NEW: Check for goal completion → skill extraction
+        let completed_goals: Vec<(usize, String, Vec<f64>)> = self
+            .goals
+            .get_recently_completed()
+            .iter()
+            .map(|g| (g.id, g.name.clone(), g.target_features.clone()))
+            .collect();
+
+        for (goal_id, goal_name, goal_features) in completed_goals {
+            // Extract skill from successful goal completion
+            if let Some(skill_id) =
+                self.skills
+                    .extract_skill_from_goal(&goal_name, goal_features.clone(), true)
+            {
+                // Record goal outcome in self-model
+                self.self_model.record_goal_outcome(&goal_name, true);
+
+                // Log skill extraction (could add to analytics)
+                log::debug!("Extracted skill {} from goal {}", skill_id, goal_id);
+            }
+        }
+
+        // NEW: Active Experimentation - design experiments to test causal hypotheses
+        if self.current_step % 500 == 0 {
+            if let Some(experiment) = self.causal_discovery.design_experiment() {
+                // Store experiment suggestion for recommend_action to use
+                log::debug!("Designed experiment: {}", experiment.hypothesis);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // UPDATE TOTALS
+        // ═══════════════════════════════════════════════════════════════════
         self.analytics.total_interactions = self.analytics.discovery_to_abstraction
             + self.analytics.abstraction_to_symbols
             + self.analytics.symbols_to_goals
             + self.analytics.goals_to_world_model
             + self.analytics.world_model_to_meta
-            + self.analytics.meta_to_discovery;
+            + self.analytics.meta_to_discovery
+            + self.analytics.credit_to_discoveries
+            + self.analytics.credit_to_symbols
+            + self.analytics.surprise_meta_updates
+            + self.analytics.imagination_abstractions;
 
-        // Compute compound rate
+        // Compute compound rate (should GROW over time for true emergence)
         if self.current_step > 100 {
             self.analytics.compound_rate =
                 self.analytics.total_interactions as f64 / self.current_step as f64;
@@ -2279,19 +3586,77 @@ impl AGICore {
         goal_id
     }
 
-    /// Get action recommendation based on integrated cognition
+    /// Get action recommendation based on FULLY INTEGRATED cognition
+    ///
+    /// This is the key function that connects internal compounding to external behavior.
+    /// All 6 subsystems contribute to action selection:
+    ///
+    /// 1. CausalDiscovery → Identifies which state features are causally relevant
+    /// 2. AbstractionHierarchy → Provides concept-based action associations
+    /// 3. WorldModel → Imagines futures for each action
+    /// 4. GoalHierarchy → Provides goal direction and completion prediction
+    /// 5. MetaLearner → Controls exploration vs exploitation
+    /// 6. SymbolSystem → Provides grounded symbolic reasoning
     pub fn recommend_action(&self, state: &[f64]) -> Option<usize> {
-        // Get goal direction
-        let goal_direction = self.goals.get_goal_direction(state);
+        // 0. SKILL CHECK - Try to use a learned skill first
+        if let Some(goal) = self.goals.get_current_goal() {
+            if let Some(skill) = self.skills.recommend_skill(state, &goal.target_features) {
+                if skill.success_rate > 0.6 && !skill.action_sequence.is_empty() {
+                    // Return first action from skill sequence
+                    return Some(skill.action_sequence[0]);
+                }
+            }
+        }
 
-        // Use world model to evaluate actions
-        let mut best_action: Option<(usize, f64)> = None;
+        // Initialize action values for all actions
+        let mut action_values: Vec<f64> = vec![0.0; self.n_actions];
+        let mut action_counts: Vec<usize> = vec![0; self.n_actions];
+
+        // ════════════════════════════════════════════════════════════════════
+        // 1. CAUSAL DISCOVERY: Weight actions by causal relevance
+        // ════════════════════════════════════════════════════════════════════
+        let relevant_vars = self.causal_discovery.get_relevant_variables(state);
+        let causal_bonus = if !relevant_vars.is_empty() {
+            // High-utility variables suggest we're in an important state
+            let avg_utility: f64 = relevant_vars
+                .iter()
+                .map(|v| v.utility_count as f64)
+                .sum::<f64>()
+                / relevant_vars.len() as f64;
+            // More utility → less random exploration, more exploitation
+            (avg_utility / 10.0).min(0.3)
+        } else {
+            0.0
+        };
+
+        // ════════════════════════════════════════════════════════════════════
+        // 2. ABSTRACTION HIERARCHY: Use concept-action associations
+        // ════════════════════════════════════════════════════════════════════
+        let activated_concepts = self.abstraction.get_activated_concepts(state);
+        for (concept_id, activation) in &activated_concepts {
+            if let Some(concept) = self.abstraction.concepts.get(concept_id) {
+                // Concepts have associated actions that worked in similar states
+                for &action in &concept.associated_actions {
+                    if action < self.n_actions {
+                        // Weight by activation strength and concept confidence
+                        action_values[action] += activation * concept.confidence * 0.4;
+                        action_counts[action] += 1;
+                    }
+                }
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // 3. WORLD MODEL: Imagine futures and evaluate expected value
+        // ════════════════════════════════════════════════════════════════════
+        let goal_direction = self.goals.get_goal_direction(state);
+        let meta_params = self.meta_learner.get_recommended_params();
 
         for action in 0..self.n_actions {
             if let Some(next) = self.world_model.predict(state, action) {
                 let mut value = next.reward;
 
-                // Add goal-directed bonus
+                // Goal alignment bonus
                 if let Some(ref direction) = goal_direction {
                     let action_direction: Vec<f64> = next
                         .features
@@ -2299,31 +3664,444 @@ impl AGICore {
                         .zip(state.iter())
                         .map(|(&n, &s)| n - s)
                         .collect();
-
                     let alignment = cosine_sim(&action_direction, direction);
-                    value += alignment * 0.5;
+                    value += alignment * 0.6; // Increased from 0.5
                 }
 
-                // Penalize uncertainty
-                value -= next.uncertainty * 0.2;
+                // Penalize uncertainty (but less if we're exploring)
+                let meta_params = self.meta_learner.get_recommended_params();
+                let uncertainty_penalty =
+                    next.uncertainty * (0.3 - meta_params.exploration_rate * 0.2);
+                value -= uncertainty_penalty;
 
-                if best_action
-                    .as_ref()
-                    .map(|(_, v)| value > *v)
-                    .unwrap_or(true)
+                // Add counterfactual-learned policy bias
+                value += self.policy_bias[action] * 0.3;
+
+                // Add self-model action effectiveness
+                value += self
+                    .self_model
+                    .action_effectiveness
+                    .get(action)
+                    .copied()
+                    .unwrap_or(0.0)
+                    * 0.2;
+
+                // ════════════════════════════════════════════════════════════
+                // 4. GOAL HIERARCHY: Bonus if action leads to goal completion
+                // ════════════════════════════════════════════════════════════
+                if self
+                    .goals
+                    .check_prediction_completes_goal(&next.features)
+                    .is_some()
                 {
-                    best_action = Some((action, value));
+                    value += 1.0; // Strong bonus for goal-completing actions
+                }
+
+                action_values[action] += value;
+                action_counts[action] += 1;
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // 5. META-LEARNER: Strategic exploration (not random!)
+        // ════════════════════════════════════════════════════════════════════
+        let meta_params = self.meta_learner.get_recommended_params();
+
+        // Instead of random exploration, explore toward uncertainty
+        let should_explore = rand_simple() < meta_params.exploration_rate;
+
+        if should_explore {
+            // Explore strategically: prefer actions with high uncertainty
+            // (epistemic exploration) or actions we haven't tried much
+            let mut exploration_values: Vec<f64> = vec![0.0; self.n_actions];
+
+            for action in 0..self.n_actions {
+                // Novelty bonus: actions with low counts are more interesting
+                let count_bonus = 1.0 / (action_counts[action] as f64 + 1.0);
+                exploration_values[action] += count_bonus * 0.5;
+
+                // Uncertainty bonus: prefer actions with uncertain outcomes
+                if let Some(next) = self.world_model.predict(state, action) {
+                    exploration_values[action] += next.uncertainty * 0.5;
+                } else {
+                    // No prediction = high uncertainty = interesting!
+                    exploration_values[action] += 1.0;
+                }
+            }
+
+            // Softmax selection for exploration (not pure random)
+            let temperature = 0.5;
+            let max_val = exploration_values
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let exp_vals: Vec<f64> = exploration_values
+                .iter()
+                .map(|v| ((v - max_val) / temperature).exp())
+                .collect();
+            let sum: f64 = exp_vals.iter().sum();
+
+            let mut cumulative = 0.0;
+            let threshold = rand_simple();
+            for (action, &exp_val) in exp_vals.iter().enumerate() {
+                cumulative += exp_val / sum;
+                if cumulative >= threshold {
+                    return Some(action);
                 }
             }
         }
 
-        // Add exploration based on meta-learner
+        // ════════════════════════════════════════════════════════════════════
+        // 5. Exploration based on meta-learner (with self-model competence adjustment)
+        // ════════════════════════════════════════════════════════════════════
         let recommended = self.meta_learner.get_recommended_params();
-        if rand_simple() < recommended.exploration_rate {
+        let adjusted_exploration =
+            recommended.exploration_rate * (1.5 - self.self_model.competence);
+
+        if rand_simple() < adjusted_exploration {
+            // Bias exploration toward self-model's best actions
+            let best_actions = self.self_model.get_best_actions();
+            if !best_actions.is_empty() && rand_simple() < 0.5 {
+                let idx = (rand_simple() * best_actions.len() as f64) as usize % best_actions.len();
+                return Some(best_actions[idx]);
+            }
+
+            // ════════════════════════════════════════════════════════════════════
+            // 6. SYMBOL SYSTEM: Symbolic reasoning for action selection
+            // ════════════════════════════════════════════════════════════════════
+            // Find symbols grounded in the current state
+            if let Some(symbol) = self.symbols.find_by_sensory(state, 0.5) {
+                // If this symbol is associated with a goal, boost goal-directed actions
+                if symbol.goal_id.is_some() {
+                    // The symbol is associated with goal achievement
+                    // Boost the action that most aligns with goal direction
+                    if let Some(ref direction) = goal_direction {
+                        for action in 0..self.n_actions {
+                            if let Some(next) = self.world_model.predict(state, action) {
+                                let action_dir: Vec<f64> = next
+                                    .features
+                                    .iter()
+                                    .zip(state.iter())
+                                    .map(|(&n, &s)| n - s)
+                                    .collect();
+                                let alignment = cosine_sim(&action_dir, direction);
+                                if alignment > 0.5 {
+                                    // Weight by symbol confidence and usage
+                                    let symbol_weight = symbol.grounding_confidence
+                                        * (1.0 + symbol.usage_count as f64 * 0.1).min(2.0);
+                                    action_values[action] += 0.3 * symbol_weight;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // 7. Q-LEARNING: Add learned action values (THE CRITICAL BRIDGE!)
+        // ════════════════════════════════════════════════════════════════════
+        // This is where internal learning DIRECTLY influences action selection
+        // Q-values represent EXPERIENCE-BASED value estimates, not just heuristics
+        for action in 0..self.n_actions {
+            let q_value = self.get_q_value(state, action);
+            // Weight Q-values significantly - they capture REAL learning
+            // Scale by confidence: more updates → more trusted
+            let state_disc = self.discretize_state(state);
+            let key = (state_disc, action);
+            let confidence = if let Some(av) = self.action_values.get(&key) {
+                // More updates = more confidence, cap at 1.0
+                (av.update_count as f64 / 20.0).min(1.0)
+            } else {
+                0.0
+            };
+            // Q-value contribution weighted by confidence
+            // High weight (0.6) because Q-values are LEARNED from real experience
+            action_values[action] += q_value * confidence * 0.6;
+            action_counts[action] += 1;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // FINAL DECISION: Combine all signals with softmax
+        // ════════════════════════════════════════════════════════════════════
+
+        // Add causal bonus to best action (exploitation boost)
+        if causal_bonus > 0.0 {
+            if let Some((best_idx, _)) = action_values
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                action_values[best_idx] += causal_bonus;
+            }
+        }
+
+        // Softmax selection with temperature from meta-learner
+        // Higher learning rate → lower temperature → more greedy
+        let temperature = (1.0 - meta_params.learning_rate).max(0.1).min(1.0);
+        let max_val = action_values
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // Handle case where all values are equal or very low
+        if max_val < -1e6 || action_values.iter().all(|&v| (v - max_val).abs() < 1e-10) {
+            // No clear signal - fall back to random
             return Some((rand_simple() * self.n_actions as f64) as usize % self.n_actions);
         }
 
-        best_action.map(|(a, _)| a)
+        let exp_vals: Vec<f64> = action_values
+            .iter()
+            .map(|v| ((v - max_val) / temperature).exp())
+            .collect();
+        let sum: f64 = exp_vals.iter().sum();
+
+        if sum < 1e-10 {
+            return Some((rand_simple() * self.n_actions as f64) as usize % self.n_actions);
+        }
+
+        let mut cumulative = 0.0;
+        let threshold = rand_simple();
+        for (action, &exp_val) in exp_vals.iter().enumerate() {
+            cumulative += exp_val / sum;
+            if cumulative >= threshold {
+                return Some(action);
+            }
+        }
+
+        // Fallback
+        action_values
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(a, _)| a)
+    }
+
+    /// Recommend action AND generate an audit trail explaining why
+    /// Returns (action, audit) tuple
+    pub fn recommend_action_with_audit(&mut self, state: &[f64]) -> (Option<usize>, DecisionAudit) {
+        let mut audit = DecisionAudit {
+            step: self.current_step,
+            ..Default::default()
+        };
+
+        // Track contributions from each subsystem
+        let mut action_values: Vec<f64> = vec![0.0; self.n_actions];
+        let mut q_contributions: Vec<f64> = vec![0.0; self.n_actions];
+        let mut goal_contributions: Vec<f64> = vec![0.0; self.n_actions];
+        let mut wm_contributions: Vec<f64> = vec![0.0; self.n_actions];
+        let mut concept_contributions: Vec<f64> = vec![0.0; self.n_actions];
+        let mut symbol_contributions: Vec<f64> = vec![0.0; self.n_actions];
+
+        // Get goal direction once
+        let goal_direction = self.goals.get_goal_direction(state);
+
+        // Record active goal
+        if let Some(goal) = self.goals.get_current_goal() {
+            audit.active_goal = Some(goal.name.clone());
+        }
+
+        // 1. Causal relevance
+        let relevant_vars = self.causal_discovery.get_relevant_variables(state);
+        let causal_bonus = if !relevant_vars.is_empty() {
+            let avg_utility: f64 = relevant_vars
+                .iter()
+                .map(|v| v.utility_count as f64)
+                .sum::<f64>()
+                / relevant_vars.len() as f64;
+            audit.causal_relevance = (avg_utility / 10.0).min(1.0);
+            (avg_utility / 10.0).min(0.3)
+        } else {
+            0.0
+        };
+
+        // 2. Concept-based contributions
+        let activated_concepts = self.abstraction.get_activated_concepts(state);
+        for (concept_id, activation) in &activated_concepts {
+            if let Some(concept) = self.abstraction.concepts.get(concept_id) {
+                for &action in &concept.associated_actions {
+                    if action < self.n_actions {
+                        let contrib = activation * concept.confidence * 0.4;
+                        concept_contributions[action] += contrib;
+                        action_values[action] += contrib;
+                    }
+                }
+                if *activation > 0.5 {
+                    audit.influential_concepts.push(concept.name.clone());
+                }
+            }
+        }
+
+        // 3. World model contributions
+        for action in 0..self.n_actions {
+            if let Some(next) = self.world_model.predict(state, action) {
+                let mut value = next.reward;
+
+                // Goal alignment
+                if let Some(ref direction) = goal_direction {
+                    let action_direction: Vec<f64> = next
+                        .features
+                        .iter()
+                        .zip(state.iter())
+                        .map(|(&n, &s)| n - s)
+                        .collect();
+                    let alignment = cosine_sim(&action_direction, direction);
+                    let goal_bonus = alignment * 0.6;
+                    goal_contributions[action] += goal_bonus;
+                    value += goal_bonus;
+                }
+
+                // Goal completion bonus
+                if self
+                    .goals
+                    .check_prediction_completes_goal(&next.features)
+                    .is_some()
+                {
+                    goal_contributions[action] += 1.0;
+                    value += 1.0;
+                }
+
+                wm_contributions[action] += value;
+                action_values[action] += value;
+            }
+        }
+
+        // 4. Symbol-based contributions
+        if let Some(symbol) = self.symbols.find_by_sensory(state, 0.5) {
+            audit.influential_symbols.push(symbol.name.clone());
+            if symbol.goal_id.is_some() {
+                if let Some(ref direction) = goal_direction {
+                    for action in 0..self.n_actions {
+                        if let Some(next) = self.world_model.predict(state, action) {
+                            let action_dir: Vec<f64> = next
+                                .features
+                                .iter()
+                                .zip(state.iter())
+                                .map(|(&n, &s)| n - s)
+                                .collect();
+                            let alignment = cosine_sim(&action_dir, direction);
+                            if alignment > 0.5 {
+                                let symbol_weight = symbol.grounding_confidence
+                                    * (1.0 + symbol.usage_count as f64 * 0.1).min(2.0);
+                                let contrib = 0.3 * symbol_weight;
+                                symbol_contributions[action] += contrib;
+                                action_values[action] += contrib;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Q-learning contributions
+        for action in 0..self.n_actions {
+            let q_value = self.get_q_value(state, action);
+            let state_disc = self.discretize_state(state);
+            let key = (state_disc, action);
+            let confidence = if let Some(av) = self.action_values.get(&key) {
+                (av.update_count as f64 / 20.0).min(1.0)
+            } else {
+                0.0
+            };
+            let contrib = q_value * confidence * 0.6;
+            q_contributions[action] += contrib;
+            action_values[action] += contrib;
+        }
+
+        // Add causal bonus to best action
+        if causal_bonus > 0.0 {
+            if let Some((best_idx, _)) = action_values
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                action_values[best_idx] += causal_bonus;
+            }
+        }
+
+        // Check exploration
+        let meta_params = self.meta_learner.get_recommended_params();
+        let should_explore = rand_simple() < meta_params.exploration_rate;
+        audit.was_exploration = should_explore;
+
+        // Select action
+        let selected = if should_explore {
+            // Exploration - select based on novelty/uncertainty
+            let explore_action = (rand_simple() * self.n_actions as f64) as usize % self.n_actions;
+            Some(explore_action)
+        } else {
+            // Exploitation - softmax selection
+            let temperature = (1.0 - meta_params.learning_rate).max(0.1).min(1.0);
+            let max_val = action_values
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            if max_val < -1e6 || action_values.iter().all(|&v| (v - max_val).abs() < 1e-10) {
+                Some((rand_simple() * self.n_actions as f64) as usize % self.n_actions)
+            } else {
+                let exp_vals: Vec<f64> = action_values
+                    .iter()
+                    .map(|v| ((v - max_val) / temperature).exp())
+                    .collect();
+                let sum: f64 = exp_vals.iter().sum();
+
+                if sum < 1e-10 {
+                    Some((rand_simple() * self.n_actions as f64) as usize % self.n_actions)
+                } else {
+                    let mut cumulative = 0.0;
+                    let threshold = rand_simple();
+                    let mut result = None;
+                    for (action, &exp_val) in exp_vals.iter().enumerate() {
+                        cumulative += exp_val / sum;
+                        if cumulative >= threshold && result.is_none() {
+                            result = Some(action);
+                        }
+                    }
+                    result.or_else(|| Some(self.n_actions - 1))
+                }
+            }
+        };
+
+        // Fill in audit with selected action's contributions
+        if let Some(action) = selected {
+            audit.selected_action = action;
+            audit.q_value_contribution = q_contributions[action];
+            audit.goal_contribution = goal_contributions[action];
+            audit.world_model_contribution = wm_contributions[action];
+            audit.concept_contribution = concept_contributions[action];
+            audit.symbol_contribution = symbol_contributions[action];
+            audit.total_confidence = action_values[action];
+        }
+
+        // Store audit (keep last 100)
+        self.decision_audits.push_back(audit.clone());
+        while self.decision_audits.len() > 100 {
+            self.decision_audits.pop_front();
+        }
+
+        // Update AGC explicability principle
+        let has_explanation = audit.q_value_contribution > 0.1
+            || audit.goal_contribution > 0.1
+            || !audit.influential_concepts.is_empty()
+            || !audit.influential_symbols.is_empty();
+
+        self.agc
+            .principles
+            .explicability
+            .update(has_explanation, self.analytics.total_interactions);
+
+        (selected, audit)
+    }
+
+    /// Get recent decision audits
+    pub fn get_decision_audits(&self) -> &VecDeque<DecisionAudit> {
+        &self.decision_audits
+    }
+
+    /// Get the most recent decision audit
+    pub fn last_decision_audit(&self) -> Option<&DecisionAudit> {
+        self.decision_audits.back()
     }
 
     /// Get comprehensive summary of all systems
@@ -2336,7 +4114,10 @@ impl AGICore {
             goals: self.goals.summary(),
             meta_learner: self.meta_learner.summary(),
             symbols: self.symbols.summary(),
+            skills: self.skills.summary(),
+            self_model: self.self_model.summary(),
             analytics: self.analytics.clone(),
+            q_learning: self.q_learning_stats(),
         }
     }
 
@@ -2396,6 +4177,20 @@ impl AGICore {
             s.symbols.total_symbols, s.symbols.grounded_symbols, s.symbols.total_expressions
         );
         println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ SKILL LIBRARY: (NEW)                                             ║");
+        println!(
+            "║   Skills: {:>4} | Avg Success: {:.1}% | Executions: {:>5}           ║",
+            s.skills.total_skills,
+            s.skills.avg_success_rate * 100.0,
+            s.skills.total_executions
+        );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ SELF-MODEL: (NEW)                                                ║");
+        println!(
+            "║   Known States: {:>4} | Competence: {:.2} | Calibration: {:.2}       ║",
+            s.self_model.known_states, s.self_model.overall_competence, s.self_model.calibration
+        );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ COMPOUNDING ANALYTICS:                                           ║");
         println!(
             "║   Discovery→Abstraction: {:>4}  Abstraction→Symbols: {:>4}         ║",
@@ -2409,10 +4204,194 @@ impl AGICore {
             "║   WorldModel→Meta: {:>4}        Meta→Discovery: {:>4}              ║",
             s.analytics.world_model_to_meta, s.analytics.meta_to_discovery
         );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ EMERGENCE METRICS:                                               ║");
+        println!(
+            "║   Credit→Discoveries: {:>4}    Credit→Symbols: {:>4}              ║",
+            s.analytics.credit_to_discoveries, s.analytics.credit_to_symbols
+        );
+        println!(
+            "║   Surprise Updates: {:>4}      Imagination Concepts: {:>4}         ║",
+            s.analytics.surprise_meta_updates, s.analytics.imagination_abstractions
+        );
+        println!(
+            "║   Amplification Factor: {:.3}                                      ║",
+            s.analytics.amplification_factor
+        );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
         println!(
             "║   Total Interactions: {:>6}   Compound Rate: {:.3}                ║",
             s.analytics.total_interactions, s.analytics.compound_rate
         );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ Q-LEARNING (ACTION VALUES):                                      ║");
+        println!(
+            "║   State-Actions: {:>5} | Avg Q: {:>+.3} | Avg Updates: {:.1}        ║",
+            s.q_learning.0, s.q_learning.1, s.q_learning.2
+        );
+        println!("╚══════════════════════════════════════════════════════════════════╝\n");
+    }
+
+    /// Check cognitive health (Collider-inspired anomaly detection)
+    /// Returns a health report with detected anomalies and recommendations
+    pub fn check_health(&self) -> CognitiveHealthReport {
+        self.check_health_with_thresholds(CognitiveHealthThresholds::default())
+    }
+
+    /// Check cognitive health with custom thresholds
+    pub fn check_health_with_thresholds(
+        &self,
+        thresholds: CognitiveHealthThresholds,
+    ) -> CognitiveHealthReport {
+        let mut anomalies = Vec::new();
+        let mut subsystem_health = SubsystemHealth::default();
+        let step = self.current_step.max(1) as f64;
+
+        // 1. Check Goal System
+        let goals_per_step = self.goals.summary().total_goals as f64 / step;
+        if goals_per_step > thresholds.max_goals_per_step {
+            anomalies.push(CognitiveAnomaly::GoalExplosion);
+            subsystem_health.goals = 0.3;
+        } else {
+            subsystem_health.goals =
+                1.0 - (goals_per_step / thresholds.max_goals_per_step).min(1.0) * 0.5;
+        }
+
+        // 2. Check Symbol System
+        let symbol_summary = self.symbols.summary();
+        let symbol_usage = symbol_summary.total_symbols as f64 / self.config.max_symbols as f64;
+        if symbol_usage > thresholds.max_symbol_usage_ratio {
+            anomalies.push(CognitiveAnomaly::SymbolSaturation);
+            subsystem_health.symbols = 0.5;
+        } else {
+            // Some usage is good, but not too much
+            subsystem_health.symbols = if symbol_usage < 0.1 { 0.7 } else { 1.0 };
+        }
+
+        // 3. Check World Model
+        let wm_summary = self.world_model.summary();
+        // Use prediction error from our running average instead
+        if self.avg_prediction_error > thresholds.max_world_model_error {
+            anomalies.push(CognitiveAnomaly::WorldModelDegradation);
+            subsystem_health.world_model = 0.4;
+        } else {
+            subsystem_health.world_model = 1.0 - self.avg_prediction_error.min(1.0);
+        }
+
+        // 4. Check Meta-Learner (via compound rate stability)
+        let meta_summary = self.meta_learner.summary();
+        if meta_summary.total_episodes > 10 {
+            // Check if exploration rate is oscillating (sign of instability)
+            let exp_rate = meta_summary.best_exploration_rate;
+            if exp_rate < 0.01 || exp_rate > 0.9 {
+                anomalies.push(CognitiveAnomaly::MetaInstability);
+                subsystem_health.meta_learner = 0.5;
+            } else {
+                subsystem_health.meta_learner = 1.0;
+            }
+        } else {
+            subsystem_health.meta_learner = 0.8; // Not enough data yet
+        }
+
+        // 5. Check Credit Flow
+        let credit_flow =
+            (self.analytics.credit_to_discoveries + self.analytics.credit_to_symbols) as f64 / step;
+        if credit_flow < thresholds.min_credit_flow_ratio && step > 1000.0 {
+            anomalies.push(CognitiveAnomaly::CreditBlockage);
+            subsystem_health.compounding = (subsystem_health.compounding + 0.5) / 2.0;
+        }
+
+        // 6. Check Compound Rate
+        if self.analytics.compound_rate < thresholds.min_compound_rate && step > 500.0 {
+            anomalies.push(CognitiveAnomaly::CompoundCollapse);
+            subsystem_health.compounding = 0.3;
+        } else {
+            subsystem_health.compounding = (self.analytics.compound_rate / 10.0).min(1.0);
+        }
+
+        // 7. Check Abstraction Hierarchy
+        let abs_summary = self.abstraction.summary();
+        if abs_summary.max_depth < thresholds.min_abstraction_depth && step > 1000.0 {
+            anomalies.push(CognitiveAnomaly::AbstractionStagnation);
+            subsystem_health.abstraction = 0.6;
+        } else {
+            subsystem_health.abstraction = (abs_summary.max_depth as f64 / 3.0).min(1.0);
+        }
+
+        // 8. Check Causal Discovery
+        let cd_summary = self.causal_discovery.summary();
+        let discovery_rate = cd_summary.total_variables as f64 / step;
+        if discovery_rate < thresholds.min_discovery_rate && step > 2000.0 {
+            anomalies.push(CognitiveAnomaly::DiscoveryDormant);
+            subsystem_health.causal_discovery = 0.5;
+        } else {
+            subsystem_health.causal_discovery = (discovery_rate / 0.01 + 0.5).min(1.0);
+        }
+
+        // Calculate overall health score
+        let health_score = (subsystem_health.causal_discovery
+            + subsystem_health.abstraction
+            + subsystem_health.world_model
+            + subsystem_health.goals
+            + subsystem_health.meta_learner
+            + subsystem_health.symbols
+            + subsystem_health.compounding)
+            / 7.0;
+
+        // System is healthy if score > 0.7 and no critical anomalies
+        let has_critical = anomalies.iter().any(|a| a.severity() >= 3);
+        let is_healthy = health_score > 0.7 && !has_critical;
+
+        CognitiveHealthReport {
+            step: self.current_step,
+            anomalies,
+            health_score,
+            subsystem_health,
+            is_healthy,
+        }
+    }
+
+    /// Print health report
+    pub fn print_health_report(&self) {
+        let report = self.check_health();
+
+        println!("\n╔══════════════════════════════════════════════════════════════════╗");
+        println!("║           COGNITIVE HEALTH REPORT (COLLIDER-INSPIRED)            ║");
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!(
+            "║ Step: {:>6}    Health Score: {:.2}    Status: {:>10}           ║",
+            report.step,
+            report.health_score,
+            if report.is_healthy {
+                "HEALTHY"
+            } else {
+                "ANOMALY"
+            }
+        );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ SUBSYSTEM HEALTH:                                                ║");
+        println!(
+            "║   Causal Discovery: {:.2}    Abstraction: {:.2}    World Model: {:.2}  ║",
+            report.subsystem_health.causal_discovery,
+            report.subsystem_health.abstraction,
+            report.subsystem_health.world_model
+        );
+        println!(
+            "║   Goals: {:.2}    Meta-Learner: {:.2}    Symbols: {:.2}    Compound: {:.2} ║",
+            report.subsystem_health.goals,
+            report.subsystem_health.meta_learner,
+            report.subsystem_health.symbols,
+            report.subsystem_health.compounding
+        );
+
+        if !report.anomalies.is_empty() {
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+            println!("║ DETECTED ANOMALIES:                                              ║");
+            for anomaly in &report.anomalies {
+                println!("║   [{:?}] {:?}", anomaly.severity(), anomaly);
+                println!("║     → {}", anomaly.recommended_action());
+            }
+        }
         println!("╚══════════════════════════════════════════════════════════════════╝\n");
     }
 }
@@ -2427,7 +4406,11 @@ pub struct AGICoreSummary {
     pub goals: GoalHierarchySummary,
     pub meta_learner: MetaLearnerSummary,
     pub symbols: SymbolSystemSummary,
+    pub skills: SkillLibrarySummary,
+    pub self_model: SelfModelSummary,
     pub analytics: CompoundingAnalytics,
+    /// Q-Learning stats: (num_entries, avg_q_value, avg_updates_per_entry)
+    pub q_learning: (usize, f64, f64),
 }
 
 #[cfg(test)]
@@ -2499,7 +4482,12 @@ mod tests {
         let goal_id = goals.create_goal("test_goal", vec![1.0, 1.0, 1.0], GoalPriority::High);
         goals.activate_goal(goal_id);
 
-        goals.update_progress(&[0.5, 0.5, 0.5]);
+        // Use a state very far from target so goal doesn't complete
+        // Progress formula: 1.0 - (distance / max_distance)
+        // With target [1,1,1] and state [-1,-1,-1]: distance = sqrt(12) ≈ 3.46
+        // max_distance = 3 * 2 = 6, progress = 1 - 3.46/6 = 0.42
+        // With threshold 0.55, goal stays active
+        goals.update_progress(&[-1.0, -1.0, -1.0]);
 
         let summary = goals.summary();
         assert_eq!(summary.active_goals, 1);

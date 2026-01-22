@@ -2,10 +2,10 @@
   "config": {
     "vocab_size": 50257,
     "max_seq_len": 256,
-    "hidden_dim": 64,
+    "hidden_dim": 128,
     "num_layers": 2,
     "num_heads": 4,
-    "ffn_dim": 256,
+    "ffn_dim": 512,
     "dropout": 0.1,
     "layer_norm_eps": 0.00001,
     "tie_embeddings": true,
@@ -14,8 +14,8 @@
     "ema_alpha": 0.9,
     "use_coherence": true
   },
-  "step": 300,
-  "loss": 31.473073959350586,
-  "timestamp": "1768910986",
+  "step": 100,
+  "loss": 72.7125420083805,
+  "timestamp": "1768932670",
   "version": "0.1.0"
 }

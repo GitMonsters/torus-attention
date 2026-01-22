@@ -84,6 +84,9 @@ pub mod consequential;
 // Unified AGI Core - Compounding Cognitive Cohesion
 pub mod agi_core;
 
+// Artificial General Coherence (AGC) - Holistic reasoning framework
+pub mod general_coherence;
+
 // Training infrastructure
 pub mod metrics;
 pub mod rmsnorm;
@@ -220,6 +223,29 @@ pub use agi_core::{
     CompoundingAnalytics,
 };
 
+// Artificial General Coherence (AGC) exports
+pub use general_coherence::{
+    // Core AGC system
+    ArtificialGeneralCoherence, AGCSummary, SOCSummary,
+    // Psychological Coherence
+    PsychologicalCoherence, DissonanceSource, DissonanceType, 
+    RegulationMode, CoherenceGates, ResolutionStrategy,
+    // Requisite Variety
+    RequisiteVariety, VarietyMeasure, ExpansionRecommendation, ExpansionArea,
+    // Homeostatic Equilibrium
+    HomeostaticEquilibrium, HomeostaticSetpoints, HomeostaticControls,
+    PIDGains, EquilibriumStatus,
+    // Epistemic Integrity
+    EpistemicIntegrity,
+    // Ethical Alignment
+    EthicalAlignment, Value, ActionEthicalStatus,
+    // Foundational Principles for AGI
+    FoundationalPrinciples, PrinciplesSummary,
+    EmbodimentPrinciple, SymbolGroundingPrinciple, CausalityPrinciple,
+    MemoryIntegrationPrinciple, MetacognitionPrinciple, AutonomyPrinciple,
+    ExplicabilityPrinciple,
+};
+
 // GPU compute exports (AMD GPU acceleration)
 #[cfg(feature = "amd-gpu")]
 pub use backend::{GpuCompute, GpuError};
@@ -315,5 +341,16 @@ pub mod prelude {
         MetaLearner,
         SymbolSystem,
         CompoundingAnalytics,
+        
+        // Artificial General Coherence (AGC) types
+        ArtificialGeneralCoherence,
+        PsychologicalCoherence,
+        RequisiteVariety,
+        HomeostaticEquilibrium,
+        EpistemicIntegrity,
+        EthicalAlignment,
+        DissonanceType,
+        RegulationMode,
+        EquilibriumStatus,
     };
 }

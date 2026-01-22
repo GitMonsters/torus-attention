@@ -105,6 +105,9 @@ pub mod multi_agent;
 // Real-World Interface - Sensor and actuator traits for embodiment
 pub mod real_world;
 
+// Tetrahedral Mixture of Agents - 64/128 agent geometric architecture
+pub mod tetrahedral_moa;
+
 // Training infrastructure
 pub mod metrics;
 pub mod rmsnorm;
@@ -348,6 +351,29 @@ pub use real_world::{
     MockCamera, MockIMU, MockServo,
 };
 
+// Tetrahedral MOA exports (64/128 agent geometric architecture)
+pub use tetrahedral_moa::{
+    // Geometry
+    Point3D, Tetrahedron, StarTetrahedron, TetrahedralGeometry,
+    TetrahedronVertex, TetrahedronEdge, TetrahedronFace,
+    TetrahedronOrientation, TetrahedralPoint, StarTetrahedralPoint,
+    // Agents
+    TetrahedralAgent, TetrahedralAgentConfig, TetrahedralAgentRole, AgentDomain,
+    // MOA System
+    TetrahedralMOA, TetrahedralMOAConfig, TetrahedralMOASummary,
+    TetrahedralRouter, TorusTetrahedralBridge,
+    // Multi-Torus Scaling
+    MultiTorusConfig,
+    // Octopus Limb Architecture
+    LimbType, OctopusLimb, OctopusLimbConfig, OctopusHub,
+    // RNA Editing Layer
+    RNAEditingLayer,
+    // Working Memory
+    TetrahedralWorkingMemory, MemorySlotType, WorkingMemorySummary,
+    // Integrated System
+    OctoTetrahedralSystem, OctoTetrahedralConfig, OctoTetrahedralSummary,
+};
+
 // GPU compute exports (AMD GPU acceleration)
 #[cfg(feature = "amd-gpu")]
 pub use backend::{GpuCompute, GpuError};
@@ -515,5 +541,28 @@ pub mod prelude {
         ActuatorState,
         SensorFusion,
         FusedPerception,
+        
+        // Tetrahedral MOA types (64/128 agent geometric architecture)
+        TetrahedralMOA,
+        TetrahedralMOAConfig,
+        Tetrahedron,
+        StarTetrahedron,
+        TetrahedralGeometry,
+        TetrahedronVertex,
+        TetrahedralAgent,
+        AgentDomain,
+        TetrahedralRouter,
+        MultiTorusConfig,
+        // Octopus Limb Architecture
+        LimbType,
+        OctopusHub,
+        OctopusLimb,
+        // RNA Editing and Working Memory
+        RNAEditingLayer,
+        TetrahedralWorkingMemory,
+        MemorySlotType,
+        // Integrated OctoTetrahedral System
+        OctoTetrahedralSystem,
+        OctoTetrahedralConfig,
     };
 }

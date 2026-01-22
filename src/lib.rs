@@ -90,6 +90,21 @@ pub mod general_coherence;
 // Illichian Learning Webs - Self-directed learning via deschooling principles
 pub mod learning_webs;
 
+// Long-term Memory System - Episodic, semantic, and procedural memory
+pub mod memory_system;
+
+// LLM Integration - Connect language models to AGI Core
+pub mod llm_integration;
+
+// Explicability - Natural language decision explanations
+pub mod explicability;
+
+// Multi-Agent System - Peer agents for collaboration and learning
+pub mod multi_agent;
+
+// Real-World Interface - Sensor and actuator traits for embodiment
+pub mod real_world;
+
 // Training infrastructure
 pub mod metrics;
 pub mod rmsnorm;
@@ -267,6 +282,72 @@ pub use learning_webs::{
     HiddenCurriculumDetector, DeinstitutionalizationAction,
 };
 
+// Long-term Memory System exports
+pub use memory_system::{
+    // Core system
+    MemorySystem, MemorySystemConfig, MemorySystemSummary, MemoryRetrievalResult,
+    // Episodic Memory
+    EpisodicMemoryStore, EpisodicMemory, EmotionalValence,
+    // Semantic Memory
+    SemanticMemoryStore, SemanticFact, SemanticRelation, RelationType,
+    // Procedural Memory
+    ProceduralMemoryStore, ProceduralSkill,
+    // Working Memory
+    WorkingMemory, WorkingMemoryItem, WorkingMemoryItemType,
+};
+
+// LLM Integration exports
+pub use llm_integration::{
+    // Core system
+    LLMIntegration, LLMIntegrationConfig, LLMIntegrationSummary, LanguageResult,
+    // Language Understanding
+    LanguageProcessor, ParsedSemantics, Intent, Entity, EntityType, Relation, Sentiment,
+    // Semantic Grounding
+    SemanticGrounding, GroundedSymbol,
+    // Reasoning Engine
+    ReasoningEngine, ReasoningChain, ReasoningStep, ReasoningType,
+};
+
+// Explicability exports
+pub use explicability::{
+    // Core system
+    ExplicabilitySystem, ExplicabilityConfig, ExplicabilitySummary,
+    // Decision Tracing
+    DecisionTracer, TracedDecision, DecisionAction, DecisionFactor,
+    Alternative, DecisionOutcome, InfluenceDirection, FactorSource,
+    // Explanation Generation
+    ExplanationGenerator, Explanation, ExplanationType, DetailLevel,
+    // Interactive Interface
+    ExplanationQuery, ExplanationResponse,
+};
+
+// Multi-Agent System exports
+pub use multi_agent::{
+    // Core system
+    MultiAgentSystem, MultiAgentConfig, MultiAgentSummary,
+    // Agent Identity
+    AgentId, AgentRole, AgentState, AgentProfile,
+    // Messaging
+    MessageRouter, AgentMessage, MessageType, MessagePriority, MessageContent,
+    // Trust and Collaboration
+    TrustManager, TrustRelation, CollaborationManager, CollaborativeTask, TaskStatus,
+};
+
+// Real-World Interface exports
+pub use real_world::{
+    // Core system
+    RealWorldInterface, RealWorldConfig, RealWorldSummary,
+    // Sensor traits and types
+    Sensor, SensorId, SensorType, SensorState, SensorReading, SensorData, SensorError,
+    // Actuator traits and types
+    Actuator, ActuatorId, ActuatorType, ActuatorState, 
+    ActuatorCommand, ActuatorTarget, ActuatorResult, ActuatorError, CommandType,
+    // Sensor Fusion
+    SensorFusion, FusedPerception,
+    // Mock implementations for testing
+    MockCamera, MockIMU, MockServo,
+};
+
 // GPU compute exports (AMD GPU acceleration)
 #[cfg(feature = "amd-gpu")]
 pub use backend::{GpuCompute, GpuError};
@@ -383,5 +464,56 @@ pub mod prelude {
         EducatorNetwork,
         HiddenCurriculumDetector,
         DeinstitutionalizationAction,
+        
+        // Long-term Memory System types
+        MemorySystem,
+        MemorySystemConfig,
+        EpisodicMemoryStore,
+        SemanticMemoryStore,
+        ProceduralMemoryStore,
+        WorkingMemory,
+        EmotionalValence,
+        RelationType,
+        
+        // LLM Integration types
+        LLMIntegration,
+        LLMIntegrationConfig,
+        LanguageProcessor,
+        SemanticGrounding,
+        ReasoningEngine,
+        Intent,
+        ReasoningType,
+        
+        // Explicability types
+        ExplicabilitySystem,
+        ExplicabilityConfig,
+        DecisionTracer,
+        ExplanationGenerator,
+        ExplanationType,
+        DetailLevel,
+        InfluenceDirection,
+        FactorSource,
+        
+        // Multi-Agent System types
+        MultiAgentSystem,
+        MultiAgentConfig,
+        AgentId,
+        AgentRole,
+        AgentState,
+        MessageType,
+        MessagePriority,
+        TrustManager,
+        CollaborationManager,
+        TaskStatus,
+        
+        // Real-World Interface types
+        RealWorldInterface,
+        RealWorldConfig,
+        SensorType,
+        SensorState,
+        ActuatorType,
+        ActuatorState,
+        SensorFusion,
+        FusedPerception,
     };
 }

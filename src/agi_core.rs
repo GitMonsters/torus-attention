@@ -22,8 +22,13 @@
 
 use crate::compounding_cohesion::{CompoundingCohesionConfig, CompoundingCohesionSystem};
 use crate::consequential::{AGIReasoningSystem, CausalGraph, CausalMechanism, CausalVariable};
+use crate::explicability::{
+    DetailLevel, ExplicabilityConfig, ExplicabilitySystem, FactorSource, InfluenceDirection,
+};
 use crate::general_coherence::{ArtificialGeneralCoherence, ExpansionArea};
 use crate::learning_webs::{LearningWebs, LearningWebsSummary};
+use crate::llm_integration::{LLMIntegration, LLMIntegrationConfig};
+use crate::memory_system::{MemorySystem, MemorySystemConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -2777,6 +2782,18 @@ pub struct AGICore {
     /// Hidden curriculum detection and deinstitutionalization
     pub learning_webs: LearningWebs,
 
+    /// Long-term Memory System - Episodic, Semantic, Procedural memory
+    /// With working memory buffer and sleep-like consolidation
+    pub memory_system: MemorySystem,
+
+    /// LLM Integration - Language understanding grounded in experience
+    /// Connects natural language to sensorimotor representations
+    pub llm_integration: LLMIntegration,
+
+    /// Explicability System - Natural language decision explanations
+    /// Generates causal, contrastive, and counterfactual explanations
+    pub explicability: ExplicabilitySystem,
+
     /// Previous symbol count for tracking new groundings per step
     prev_grounded_symbols: usize,
 
@@ -2833,6 +2850,12 @@ impl AGICore {
             agc: ArtificialGeneralCoherence::new(),
             // Initialize Illichian Learning Webs (Deschooling for AGI)
             learning_webs: LearningWebs::new(),
+            // Initialize Long-term Memory System
+            memory_system: MemorySystem::new(MemorySystemConfig::default()),
+            // Initialize LLM Integration for language grounding
+            llm_integration: LLMIntegration::new(LLMIntegrationConfig::default()),
+            // Initialize Explicability System for decision explanations
+            explicability: ExplicabilitySystem::new(ExplicabilityConfig::default()),
             // Track new symbol groundings
             prev_grounded_symbols: 0,
             last_action_has_symbol: false,
@@ -3110,6 +3133,126 @@ impl AGICore {
                 }
             }
         }
+
+        // 13. MEMORY SYSTEM INTEGRATION - Store episodic memories for significant events
+        // Record significant experiences as episodic memories
+        if reward.abs() > 0.3 || is_terminal || completed_goals.len() > 0 {
+            // Use process_experience which is the correct API for MemorySystem
+            let concepts: Vec<String> = self
+                .symbols
+                .find_by_sensory(state, 0.3)
+                .map(|s| s.name.clone())
+                .into_iter()
+                .collect();
+            // Use total_variables as proxy for causal context since we don't have recent_discoveries
+            let causal_context: Vec<usize> =
+                (0..self.causal_discovery.summary().total_variables.min(3)).collect();
+
+            self.memory_system.process_experience(
+                state.to_vec(),
+                Some(action),
+                reward,
+                next_state.to_vec(),
+                concepts,
+                causal_context,
+            );
+        }
+
+        // Periodic memory consolidation (simulating sleep-like replay)
+        if self.current_step % 100 == 0 {
+            self.memory_system.consolidate();
+        }
+
+        // 14. EXPLICABILITY INTEGRATION - Track decisions for explanation generation
+        // Record this decision for potential future explanation
+        let q_values: Vec<f64> = (0..self.n_actions)
+            .map(|a| {
+                let state_disc = self.discretize_state(state);
+                self.action_values
+                    .get(&(state_disc, a))
+                    .map(|av| av.q_value)
+                    .unwrap_or(0.0)
+            })
+            .collect();
+
+        // Build decision factors with full signature:
+        // (name, value, importance, direction, source)
+        let factors = vec![
+            (
+                "q_value".to_string(),
+                q_values.get(action).copied().unwrap_or(0.0),
+                0.8, // High importance
+                InfluenceDirection::Positive,
+                FactorSource::Learning, // Using Learning instead of Model
+            ),
+            (
+                "reward_expectation".to_string(),
+                reward,
+                0.6,
+                if reward >= 0.0 {
+                    InfluenceDirection::Positive
+                } else {
+                    InfluenceDirection::Negative
+                },
+                FactorSource::Perception, // Using Perception instead of Observation
+            ),
+            (
+                "exploration_rate".to_string(),
+                self.meta_learner.best_exploration_rate,
+                0.4,
+                InfluenceDirection::Neutral,
+                FactorSource::Prediction, // Using Prediction instead of Model
+            ),
+            (
+                "goal_alignment".to_string(),
+                if completed_goals.len() > 0 { 1.0 } else { 0.5 },
+                0.7,
+                InfluenceDirection::Positive,
+                FactorSource::Goal,
+            ),
+        ];
+
+        // Build alternatives (other actions not chosen)
+        let alternatives: Vec<(String, String, f64)> = (0..self.n_actions)
+            .filter(|&a| a != action)
+            .take(3)
+            .map(|a| {
+                (
+                    format!("action_{}", a),
+                    format!(
+                        "Alternative action with Q={:.3}",
+                        q_values.get(a).copied().unwrap_or(0.0)
+                    ),
+                    q_values.get(a).copied().unwrap_or(0.0),
+                )
+            })
+            .collect();
+
+        // Get active goal names from the active_goals field
+        let goal_names: Vec<String> = self
+            .goals
+            .active_goals
+            .iter()
+            .filter_map(|&id| self.goals.goals.get(&id).map(|g| g.name.clone()))
+            .take(3)
+            .collect();
+
+        let confidence = if q_values.iter().any(|&q| q > 0.0) {
+            let max_q = q_values.iter().cloned().fold(f64::MIN, f64::max);
+            let chosen_q = q_values.get(action).copied().unwrap_or(0.0);
+            (chosen_q / max_q.max(0.01)).clamp(0.0, 1.0)
+        } else {
+            0.5 // Uncertain when no Q-values yet
+        };
+
+        self.explicability.record_decision(
+            &format!("action_{}", action),
+            &format!("Selected action {} at step {}", action, self.current_step),
+            factors,
+            alternatives,
+            goal_names,
+            confidence,
+        );
     }
 
     /// Discretize state for Q-table lookup

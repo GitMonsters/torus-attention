@@ -61,6 +61,9 @@ pub mod sensorimotor;
 // Consequential reasoning and AGI systems
 pub mod consequential;
 
+// Unified AGI Core - Compounding Cognitive Cohesion
+pub mod agi_core;
+
 // Training infrastructure
 pub mod metrics;
 pub mod rmsnorm;
@@ -178,6 +181,25 @@ pub use consequential::{
     StreamVotingSystem, TransitionModel, VotingResult, VotingStats,
 };
 
+// Unified AGI Core exports (Compounding Cognitive Cohesion)
+pub use agi_core::{
+    AGICore, AGICoreConfig, AGICoreSummary,
+    // Causal Discovery
+    CausalDiscovery, CausalDiscoverySummary, CausalObservation, DiscoveredVariable,
+    // Abstraction Hierarchy
+    AbstractionHierarchy, AbstractionSummary, Concept,
+    // World Model
+    WorldModel, WorldModelSummary, WorldState, WorldTransition, SimulatedTrajectory,
+    // Goal Hierarchy
+    GoalHierarchy, GoalHierarchySummary, Goal, GoalPriority, GoalStatus,
+    // Meta-Learning
+    MetaLearner, MetaLearnerSummary, LearningMetrics, LearningEpisode,
+    // Symbol System
+    SymbolSystem, SymbolSystemSummary, Symbol, SymbolicExpression, SymbolRelation,
+    // Compounding Analytics
+    CompoundingAnalytics,
+};
+
 /// Result type for torus operations
 pub type TorusResult<T> = Result<T, TorusError>;
 
@@ -257,5 +279,17 @@ pub mod prelude {
         StreamVotingSystem,
         CompoundingMetrics,
         DecisionMethod,
+        
+        // Unified AGI Core types (Compounding Cognitive Cohesion)
+        AGICore,
+        AGICoreConfig,
+        CausalDiscovery,
+        AbstractionHierarchy,
+        WorldModel,
+        GoalHierarchy,
+        GoalPriority,
+        MetaLearner,
+        SymbolSystem,
+        CompoundingAnalytics,
     };
 }

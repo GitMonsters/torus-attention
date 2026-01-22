@@ -10,6 +10,7 @@
 //! - Graph memory growth (should accumulate knowledge)
 //! - Cognitive dissonance resolution (should adapt to changes)
 //! - AGI Reasoning: Causal inference, MCTS planning, stream voting
+//! - **NEW** Unified AGI Core: Causal discovery, abstraction, world model, goals, meta-learning, symbols
 //!
 //! Run with:
 //! ```bash
@@ -20,6 +21,7 @@ use candle_core::Device;
 use candle_nn::VarMap;
 use std::time::Instant;
 use torus_attention::{
+    agi_core::{AGICore, AGICoreConfig, GoalPriority},
     compounding_cohesion::{CompoundingCohesionConfig, GoalType},
     compounding_transformer::{CompoundingCohesionTransformer, CompoundingTransformerConfig},
     sensorimotor::{
@@ -44,6 +46,12 @@ struct EpisodeMetrics {
     goal_reward: f64,
     exploration_reward: f64,
     dissonance_events: usize,
+    // AGI Core metrics
+    agi_compound_rate: f64,
+    agi_discovered_variables: usize,
+    agi_concepts: usize,
+    agi_symbols: usize,
+    agi_active_goals: usize,
 }
 
 /// Aggregate metrics over multiple episodes
@@ -283,6 +291,32 @@ fn main() -> TorusResult<()> {
     let mut dissonance_tracker = CognitiveDissonanceTracker::new(0.3);
     let mut learning_metrics = LearningMetrics::new();
 
+    // Create the unified AGI Core
+    println!("Creating Unified AGI Core...");
+    let agi_config = AGICoreConfig {
+        max_causal_variables: 50,
+        max_abstraction_depth: 4,
+        world_model_horizon: 15,
+        max_active_goals: 5,
+        meta_learning_window: 50,
+        max_symbols: 200,
+        causal_discovery_threshold: 0.25,
+        abstraction_merge_threshold: 0.80,
+        world_model_error_threshold: 0.15,
+        goal_completion_threshold: 0.85,
+        symbol_grounding_threshold: 0.6,
+    };
+    let mut agi_core = AGICore::new(agi_config, d_model, 5); // 5 actions
+
+    // Create initial exploration goal
+    let exploration_goal = agi_core.create_goal_from_observation(
+        "explore_environment",
+        vec![0.5; d_model], // Generic target - will be updated
+        GoalPriority::High,
+    );
+    println!("AGI Core initialized with exploration goal.");
+    println!();
+
     println!("Running {} episodes...", n_episodes);
     println!();
     println!("Ep  | Reward  | Coverage | Coherence | MemGuide | MemSim | Nodes | Steps | Learning");
@@ -310,6 +344,36 @@ fn main() -> TorusResult<()> {
             dissonance_tracker.record_coherence_drop(0.4 - result.final_coherence);
         }
 
+        // Process experience through AGI Core
+        // Create state representation from episode result
+        let state_features: Vec<f64> = (0..d_model)
+            .map(|i| {
+                let base = (i as f64 / d_model as f64) * coverage;
+                base + result.final_coherence * 0.1
+            })
+            .collect();
+
+        // Simulate action taken (use episode modulo as proxy)
+        let action = episode % 5;
+
+        // Next state with slight perturbation
+        let next_state: Vec<f64> = state_features
+            .iter()
+            .map(|&s| s + (result.total_reward * 0.01))
+            .collect();
+
+        // Feed to AGI Core
+        agi_core.process_experience(
+            &state_features,
+            action,
+            &next_state,
+            result.total_reward as f64,
+            false, // not terminal
+        );
+
+        // Get AGI Core summary for metrics
+        let agi_summary = agi_core.summary();
+
         // Record metrics
         let metrics = EpisodeMetrics {
             episode,
@@ -328,6 +392,12 @@ fn main() -> TorusResult<()> {
             } else {
                 0
             },
+            // AGI Core metrics
+            agi_compound_rate: agi_summary.analytics.compound_rate,
+            agi_discovered_variables: agi_summary.causal_discovery.total_variables,
+            agi_concepts: agi_summary.abstraction.total_concepts,
+            agi_symbols: agi_summary.symbols.total_symbols,
+            agi_active_goals: agi_summary.goals.active_goals,
         };
         learning_metrics.record(metrics);
 
@@ -449,6 +519,10 @@ fn main() -> TorusResult<()> {
         println!();
     }
 
+    // Unified AGI Core Analysis
+    println!();
+    agi_core.print_summary();
+
     let elapsed = start.elapsed();
     println!(
         "Total time: {:.2}s ({:.2}ms per episode)",
@@ -509,6 +583,45 @@ fn main() -> TorusResult<()> {
         println!("- Check if coherence signals are driving behavior");
         println!("- Verify graph memory is being utilized for decisions");
         println!("- Consider adding explicit gradient-based learning");
+    }
+
+    // AGI Core compounding assessment
+    println!();
+    let final_agi = agi_core.summary();
+    println!("AGI Core Compounding Assessment:");
+    println!(
+        "├─ Compound Rate: {:.4} interactions/step",
+        final_agi.analytics.compound_rate
+    );
+    println!(
+        "├─ Total Interactions: {}",
+        final_agi.analytics.total_interactions
+    );
+    println!(
+        "├─ Discovery→Abstraction: {}",
+        final_agi.analytics.discovery_to_abstraction
+    );
+    println!(
+        "├─ Abstraction→Symbols: {}",
+        final_agi.analytics.abstraction_to_symbols
+    );
+    println!("├─ Symbols→Goals: {}", final_agi.analytics.symbols_to_goals);
+    println!(
+        "├─ Goals→WorldModel: {}",
+        final_agi.analytics.goals_to_world_model
+    );
+    println!(
+        "├─ WorldModel→Meta: {}",
+        final_agi.analytics.world_model_to_meta
+    );
+    println!(
+        "└─ Meta→Discovery: {}",
+        final_agi.analytics.meta_to_discovery
+    );
+
+    if final_agi.analytics.compound_rate > 0.5 {
+        println!();
+        println!("COMPOUNDING DETECTED: The AGI capabilities are multiplicatively interacting!");
     }
 
     println!();

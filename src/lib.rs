@@ -87,6 +87,9 @@ pub mod agi_core;
 // Artificial General Coherence (AGC) - Holistic reasoning framework
 pub mod general_coherence;
 
+// Illichian Learning Webs - Self-directed learning via deschooling principles
+pub mod learning_webs;
+
 // Training infrastructure
 pub mod metrics;
 pub mod rmsnorm;
@@ -246,6 +249,24 @@ pub use general_coherence::{
     ExplicabilityPrinciple,
 };
 
+// Illichian Learning Webs exports (Deschooling principles for AGI)
+pub use learning_webs::{
+    // Core system
+    LearningWebs, LearningWebsSummary, LearningPathRecommendation,
+    // Ethos (Promethean vs Epimethean)
+    LearningEthos,
+    // Network 1: Educational Objects
+    ObjectNetwork, EducationalObject, ObjectType,
+    // Network 2: Skill Exchanges
+    SkillExchangeNetwork, Skill, SkillExchange,
+    // Network 3: Peer Matching
+    PeerMatchingNetwork, LearningPeer,
+    // Network 4: Educators-at-Large
+    EducatorNetwork, EducatorAtLarge, GuidanceStyle,
+    // Hidden Curriculum Detection
+    HiddenCurriculumDetector, DeinstitutionalizationAction,
+};
+
 // GPU compute exports (AMD GPU acceleration)
 #[cfg(feature = "amd-gpu")]
 pub use backend::{GpuCompute, GpuError};
@@ -352,5 +373,15 @@ pub mod prelude {
         DissonanceType,
         RegulationMode,
         EquilibriumStatus,
+        
+        // Illichian Learning Webs types (Deschooling for AGI)
+        LearningWebs,
+        LearningEthos,
+        ObjectNetwork,
+        SkillExchangeNetwork,
+        PeerMatchingNetwork,
+        EducatorNetwork,
+        HiddenCurriculumDetector,
+        DeinstitutionalizationAction,
     };
 }

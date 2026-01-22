@@ -23,6 +23,7 @@
 use crate::compounding_cohesion::{CompoundingCohesionConfig, CompoundingCohesionSystem};
 use crate::consequential::{AGIReasoningSystem, CausalGraph, CausalMechanism, CausalVariable};
 use crate::general_coherence::{ArtificialGeneralCoherence, ExpansionArea};
+use crate::learning_webs::{LearningWebs, LearningWebsSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -2771,6 +2772,11 @@ pub struct AGICore {
     /// epistemic integrity, and ethical alignment
     pub agc: ArtificialGeneralCoherence,
 
+    /// Illichian Learning Webs - Self-directed learning via deschooling principles
+    /// Four networks: Objects, Skills, Peers, Educators
+    /// Hidden curriculum detection and deinstitutionalization
+    pub learning_webs: LearningWebs,
+
     /// Previous symbol count for tracking new groundings per step
     prev_grounded_symbols: usize,
 
@@ -2825,6 +2831,8 @@ impl AGICore {
             trace_decay: 0.8, // TD(0.8)
             // Initialize Artificial General Coherence
             agc: ArtificialGeneralCoherence::new(),
+            // Initialize Illichian Learning Webs (Deschooling for AGI)
+            learning_webs: LearningWebs::new(),
             // Track new symbol groundings
             prev_grounded_symbols: 0,
             last_action_has_symbol: false,
@@ -2953,7 +2961,75 @@ impl AGICore {
             has_symbol_for_action,
         );
 
-        // 8. APPLY HOMEOSTATIC CONTROLS - actually adjust subsystem parameters!
+        // 11. UPDATE ILLICHIAN LEARNING WEBS - Self-directed learning metrics
+        // Compute learning quality indicators from current cognitive state
+        let intrinsic_motivation = {
+            // High if learning is driven by curiosity (exploration) rather than external rewards
+            let curiosity_driven = self.meta_learner.best_exploration_rate;
+            let reward_driven = if reward.abs() > 0.5 { 0.3 } else { 0.7 };
+            curiosity_driven * 0.6 + reward_driven * 0.4
+        };
+        let active_creation = {
+            // High if actively creating concepts/symbols vs passively observing
+            let concepts_per_step = concepts_formed as f64 / (self.current_step + 1) as f64;
+            let symbols_per_step = new_groundings as f64 / (self.current_step + 1).max(1) as f64;
+            (concepts_per_step * 10.0 + symbols_per_step * 5.0).min(1.0)
+        };
+        let self_assessment = {
+            // High if using internal metrics vs external rewards for evaluation
+            let internal_signal = self.avg_prediction_error.min(1.0);
+            let calibration = self.self_model.calibration_score();
+            (1.0 - internal_signal) * 0.5 + calibration * 0.5
+        };
+        let process_focus = {
+            // High if focused on learning process vs outcome/goals
+            let goal_pressure = if self.goals.active_count() > 5 {
+                0.3
+            } else {
+                0.7
+            };
+            let exploration_focus = self.meta_learner.best_exploration_rate;
+            goal_pressure * 0.5 + exploration_focus * 0.5
+        };
+        let experiential_learning = {
+            // High if learning from direct experience vs instruction
+            // AGI Core primarily learns through direct experience (sensorimotor loop)
+            0.8 + (self.skills.summary().total_skills as f64 * 0.01).min(0.2)
+        };
+
+        self.learning_webs.update(
+            intrinsic_motivation,
+            active_creation,
+            self_assessment,
+            process_focus,
+            experiential_learning,
+        );
+
+        // Register newly discovered concepts as educational objects
+        if concepts_formed > 0 && self.current_step % 50 == 0 {
+            let concept_id = concepts_formed.saturating_sub(1);
+            self.learning_webs.objects.register_object(
+                &format!("concept_{}", concept_id),
+                crate::learning_webs::ObjectType::DirectExperience,
+                vec![concept_id],
+                self.current_step,
+            );
+        }
+
+        // Register newly extracted skills in skill exchange network
+        if self.skills.summary().total_skills > 0 && self.current_step % 100 == 0 {
+            for skill in self.skills.skills.values() {
+                if skill.execution_count == 1 {
+                    // New skill - register in learning webs
+                    self.learning_webs.skills.register_skill(
+                        &skill.name,
+                        vec![], // No prerequisites for now
+                    );
+                }
+            }
+        }
+
+        // 12. APPLY HOMEOSTATIC CONTROLS - actually adjust subsystem parameters!
         let controls = &self.agc.homeostasis.controls;
         if controls.regulation_intensity > 0.2 {
             // Apply learning rate adjustment to Q-learning
@@ -3185,6 +3261,60 @@ impl AGICore {
             0.0
         };
         (n_entries, avg_q, avg_updates)
+    }
+
+    /// Counterfactual learning - compute regret and update policy bias
+    /// This helps the agent learn from "what might have been"
+    fn counterfactual_update(
+        &mut self,
+        last_state: &[f64],
+        last_action: usize,
+        current_state: &[f64],
+        reward: f64,
+    ) {
+        // Get Q-values for all actions in the last state
+        let last_state_disc = self.discretize_state(last_state);
+
+        // Find the best action we could have taken
+        let mut best_q = f64::NEG_INFINITY;
+        let mut best_action = last_action;
+
+        for a in 0..self.n_actions {
+            let key = (last_state_disc.clone(), a);
+            if let Some(av) = self.action_values.get(&key) {
+                if av.q_value > best_q {
+                    best_q = av.q_value;
+                    best_action = a;
+                }
+            }
+        }
+
+        // Compute counterfactual regret
+        let actual_q = self.get_q_value(last_state, last_action);
+        let regret = (best_q - actual_q).max(0.0);
+
+        // If significant regret, update policy bias
+        if regret > self.config.counterfactual_regret_threshold {
+            // Slightly bias toward the better action
+            if best_action < self.policy_bias.len() {
+                self.policy_bias[best_action] += 0.01;
+            }
+            // Slightly bias away from the bad action
+            if last_action < self.policy_bias.len() {
+                self.policy_bias[last_action] -= 0.005;
+            }
+
+            // Record in self-model
+            self.self_model.record_prediction_error(regret);
+        }
+
+        // Normalize policy bias
+        let sum: f64 = self.policy_bias.iter().map(|&x| x.abs()).sum();
+        if sum > 1.0 {
+            for bias in &mut self.policy_bias {
+                *bias /= sum;
+            }
+        }
     }
 
     /// Drive compounding interactions between systems - THE EMERGENCE ENGINE
@@ -4116,6 +4246,7 @@ impl AGICore {
             symbols: self.symbols.summary(),
             skills: self.skills.summary(),
             self_model: self.self_model.summary(),
+            learning_webs: self.learning_webs.summary(),
             analytics: self.analytics.clone(),
             q_learning: self.q_learning_stats(),
         }
@@ -4222,6 +4353,19 @@ impl AGICore {
         println!(
             "║   Total Interactions: {:>6}   Compound Rate: {:.3}                ║",
             s.analytics.total_interactions, s.analytics.compound_rate
+        );
+        println!("╠══════════════════════════════════════════════════════════════════╣");
+        println!("║ ILLICHIAN LEARNING WEBS (Deschooling for AGI):                   ║");
+        println!(
+            "║   Objects: {:>4} | Skills: {:>4} | Peers: {:>3} | Educators: {:>3}     ║",
+            s.learning_webs.objects_count,
+            s.learning_webs.skills_count,
+            s.learning_webs.peers_count,
+            s.learning_webs.educators_count
+        );
+        println!(
+            "║   Self-Direction: {:.3} | Institutionalization: {:.3}              ║",
+            s.learning_webs.self_direction_score, s.learning_webs.institutionalization_score
         );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ Q-LEARNING (ACTION VALUES):                                      ║");
@@ -4408,6 +4552,7 @@ pub struct AGICoreSummary {
     pub symbols: SymbolSystemSummary,
     pub skills: SkillLibrarySummary,
     pub self_model: SelfModelSummary,
+    pub learning_webs: LearningWebsSummary,
     pub analytics: CompoundingAnalytics,
     /// Q-Learning stats: (num_entries, avg_q_value, avg_updates_per_entry)
     pub q_learning: (usize, f64, f64),

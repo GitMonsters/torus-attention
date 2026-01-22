@@ -21,7 +21,7 @@ use candle_core::Device;
 use candle_nn::VarMap;
 use std::time::Instant;
 use torus_attention::{
-    agi_core::{AGICore, AGICoreConfig, GoalPriority},
+    agi_core::AGICoreConfig,
     compounding_cohesion::{CompoundingCohesionConfig, GoalType},
     compounding_transformer::{CompoundingCohesionTransformer, CompoundingTransformerConfig},
     sensorimotor::{
@@ -268,7 +268,7 @@ fn main() -> TorusResult<()> {
         cognitive_dissonance_rate: 0.1,    // 10% chance of dissonance per step
     };
 
-    // Create agent with AGI reasoning enabled
+    // Create agent with FULL AGI integration (AGIReasoningSystem + AGICore unified)
     let env = LearningGridEnvironment::new(env_config.clone(), &device, 42);
     let agent_config = SensorimotorConfig {
         max_steps_per_episode: 100,
@@ -278,21 +278,7 @@ fn main() -> TorusResult<()> {
         verbose: false,
     };
 
-    // Create agent with AGI reasoning (8 streams, 5 actions: 4 directions + stay)
-    let mut agent = SensorimotorAgent::with_agi_reasoning(
-        transformer,
-        Box::new(env),
-        agent_config,
-        8, // n_streams
-        5, // n_actions (up, down, left, right, stay)
-    );
-
-    // Cognitive dissonance tracker
-    let mut dissonance_tracker = CognitiveDissonanceTracker::new(0.3);
-    let mut learning_metrics = LearningMetrics::new();
-
-    // Create the unified AGI Core
-    println!("Creating Unified AGI Core...");
+    // AGI Core configuration
     let agi_config = AGICoreConfig {
         max_causal_variables: 50,
         max_abstraction_depth: 4,
@@ -306,18 +292,33 @@ fn main() -> TorusResult<()> {
         goal_completion_threshold: 0.85,
         symbol_grounding_threshold: 0.6,
     };
-    let mut agi_core = AGICore::new(agi_config, d_model, 5); // 5 actions
 
-    // Create initial exploration goal
-    let exploration_goal = agi_core.create_goal_from_observation(
-        "explore_environment",
-        vec![0.5; d_model], // Generic target - will be updated
-        GoalPriority::High,
+    // Create agent with FULL AGI (AGIReasoningSystem + AGICore integrated)
+    // Now AGI Core can DRIVE actions instead of just observing
+    println!("Creating SensorimotorAgent with FULL AGI integration...");
+    println!("├─ AGIReasoningSystem: Causal graphs, MCTS, stream voting");
+    println!(
+        "└─ AGICore: Causal discovery, abstraction, world model, goals, meta-learning, symbols"
     );
-    println!("AGI Core initialized with exploration goal.");
     println!();
 
+    let mut agent = SensorimotorAgent::with_full_agi(
+        transformer,
+        Box::new(env),
+        agent_config,
+        8,       // n_streams
+        5,       // n_actions (up, down, left, right, stay)
+        d_model, // feature_dim for AGI Core
+        Some(agi_config),
+    );
+
+    // Cognitive dissonance tracker
+    let mut dissonance_tracker = CognitiveDissonanceTracker::new(0.3);
+    let mut learning_metrics = LearningMetrics::new();
+
     println!("Running {} episodes...", n_episodes);
+    println!("AGI Core is now driving actions (not just observing)!");
+    println!();
     println!();
     println!("Ep  | Reward  | Coverage | Coherence | MemGuide | MemSim | Nodes | Steps | Learning");
     println!("────┼─────────┼──────────┼───────────┼──────────┼────────┼───────┼───────┼─────────");
@@ -344,35 +345,26 @@ fn main() -> TorusResult<()> {
             dissonance_tracker.record_coherence_drop(0.4 - result.final_coherence);
         }
 
-        // Process experience through AGI Core
-        // Create state representation from episode result
-        let state_features: Vec<f64> = (0..d_model)
-            .map(|i| {
-                let base = (i as f64 / d_model as f64) * coverage;
-                base + result.final_coherence * 0.1
-            })
-            .collect();
-
-        // Simulate action taken (use episode modulo as proxy)
-        let action = episode % 5;
-
-        // Next state with slight perturbation
-        let next_state: Vec<f64> = state_features
-            .iter()
-            .map(|&s| s + (result.total_reward * 0.01))
-            .collect();
-
-        // Feed to AGI Core
-        agi_core.process_experience(
-            &state_features,
-            action,
-            &next_state,
-            result.total_reward as f64,
-            false, // not terminal
-        );
-
-        // Get AGI Core summary for metrics
-        let agi_summary = agi_core.summary();
+        // Get AGI Core summary for metrics (from the integrated agent)
+        // AGI Core is now learning per-step inside run_episode(), not here
+        let (
+            agi_compound_rate,
+            agi_discovered_variables,
+            agi_concepts,
+            agi_symbols,
+            agi_active_goals,
+        ) = if let Some(ref agi_core) = agent.agi_core {
+            let summary = agi_core.summary();
+            (
+                summary.analytics.compound_rate,
+                summary.causal_discovery.total_variables,
+                summary.abstraction.total_concepts,
+                summary.symbols.total_symbols,
+                summary.goals.active_goals,
+            )
+        } else {
+            (0.0, 0, 0, 0, 0)
+        };
 
         // Record metrics
         let metrics = EpisodeMetrics {
@@ -392,12 +384,12 @@ fn main() -> TorusResult<()> {
             } else {
                 0
             },
-            // AGI Core metrics
-            agi_compound_rate: agi_summary.analytics.compound_rate,
-            agi_discovered_variables: agi_summary.causal_discovery.total_variables,
-            agi_concepts: agi_summary.abstraction.total_concepts,
-            agi_symbols: agi_summary.symbols.total_symbols,
-            agi_active_goals: agi_summary.goals.active_goals,
+            // AGI Core metrics (from integrated agent)
+            agi_compound_rate,
+            agi_discovered_variables,
+            agi_concepts,
+            agi_symbols,
+            agi_active_goals,
         };
         learning_metrics.record(metrics);
 
@@ -429,15 +421,16 @@ fn main() -> TorusResult<()> {
         }
 
         // Replace environment for next episode (with new random seed)
-        // Preserve AGI reasoning state across episodes
+        // Preserve BOTH AGI reasoning AND AGI Core state across episodes
         if episode < n_episodes - 1 {
             let new_env = LearningGridEnvironment::new(
                 env_config.clone(),
                 &device,
                 42 + (episode as u64 + 1) * 17, // Different seed each episode
             );
-            // Extract AGI reasoning to preserve it
+            // Extract AGI systems to preserve them
             let agi_reasoning = agent.agi_reasoning.take();
+            let agi_core = agent.agi_core.take();
             agent = SensorimotorAgent::new(
                 agent.transformer,
                 Box::new(new_env),
@@ -449,8 +442,9 @@ fn main() -> TorusResult<()> {
                     verbose: false,
                 },
             );
-            // Restore AGI reasoning
+            // Restore AGI systems (they persist across episodes)
             agent.agi_reasoning = agi_reasoning;
+            agent.agi_core = agi_core;
         }
     }
 
@@ -519,9 +513,13 @@ fn main() -> TorusResult<()> {
         println!();
     }
 
-    // Unified AGI Core Analysis
+    // Unified AGI Core Analysis (from integrated agent)
     println!();
-    agi_core.print_summary();
+    if let Some(ref agi_core) = agent.agi_core {
+        agi_core.print_summary();
+    } else {
+        println!("AGI Core: Not enabled");
+    }
 
     let elapsed = start.elapsed();
     println!(
@@ -585,43 +583,49 @@ fn main() -> TorusResult<()> {
         println!("- Consider adding explicit gradient-based learning");
     }
 
-    // AGI Core compounding assessment
+    // AGI Core compounding assessment (from integrated agent)
     println!();
-    let final_agi = agi_core.summary();
-    println!("AGI Core Compounding Assessment:");
-    println!(
-        "├─ Compound Rate: {:.4} interactions/step",
-        final_agi.analytics.compound_rate
-    );
-    println!(
-        "├─ Total Interactions: {}",
-        final_agi.analytics.total_interactions
-    );
-    println!(
-        "├─ Discovery→Abstraction: {}",
-        final_agi.analytics.discovery_to_abstraction
-    );
-    println!(
-        "├─ Abstraction→Symbols: {}",
-        final_agi.analytics.abstraction_to_symbols
-    );
-    println!("├─ Symbols→Goals: {}", final_agi.analytics.symbols_to_goals);
-    println!(
-        "├─ Goals→WorldModel: {}",
-        final_agi.analytics.goals_to_world_model
-    );
-    println!(
-        "├─ WorldModel→Meta: {}",
-        final_agi.analytics.world_model_to_meta
-    );
-    println!(
-        "└─ Meta→Discovery: {}",
-        final_agi.analytics.meta_to_discovery
-    );
+    if let Some(ref agi_core) = agent.agi_core {
+        let final_agi = agi_core.summary();
+        println!("AGI Core Compounding Assessment:");
+        println!(
+            "├─ Compound Rate: {:.4} interactions/step",
+            final_agi.analytics.compound_rate
+        );
+        println!(
+            "├─ Total Interactions: {}",
+            final_agi.analytics.total_interactions
+        );
+        println!(
+            "├─ Discovery→Abstraction: {}",
+            final_agi.analytics.discovery_to_abstraction
+        );
+        println!(
+            "├─ Abstraction→Symbols: {}",
+            final_agi.analytics.abstraction_to_symbols
+        );
+        println!("├─ Symbols→Goals: {}", final_agi.analytics.symbols_to_goals);
+        println!(
+            "├─ Goals→WorldModel: {}",
+            final_agi.analytics.goals_to_world_model
+        );
+        println!(
+            "├─ WorldModel→Meta: {}",
+            final_agi.analytics.world_model_to_meta
+        );
+        println!(
+            "└─ Meta→Discovery: {}",
+            final_agi.analytics.meta_to_discovery
+        );
 
-    if final_agi.analytics.compound_rate > 0.5 {
-        println!();
-        println!("COMPOUNDING DETECTED: The AGI capabilities are multiplicatively interacting!");
+        if final_agi.analytics.compound_rate > 0.5 {
+            println!();
+            println!(
+                "COMPOUNDING DETECTED: The AGI capabilities are multiplicatively interacting!"
+            );
+        }
+    } else {
+        println!("AGI Core: Not enabled (no compounding assessment)");
     }
 
     println!();

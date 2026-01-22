@@ -80,6 +80,7 @@
 //! println!("{}", agent.summary());
 //! ```
 
+use crate::agi_core::{AGICore, AGICoreConfig, GoalPriority};
 use crate::compounding_cohesion::{GoalState, GoalType};
 use crate::compounding_transformer::CompoundingCohesionTransformer;
 use crate::consequential::{AGIDecision, AGIReasoningSystem, CompoundingMetrics, StreamVote};
@@ -1236,6 +1237,8 @@ pub struct SensorimotorAgent {
     pub step_stats: VecDeque<StepStats>,
     /// AGI Reasoning System (causal graphs, MCTS, voting)
     pub agi_reasoning: Option<AGIReasoningSystem>,
+    /// Unified AGI Core (causal discovery, abstraction, world model, goals, meta-learning, symbols)
+    pub agi_core: Option<AGICore>,
 }
 
 impl std::fmt::Debug for SensorimotorAgent {
@@ -1297,6 +1300,7 @@ impl SensorimotorAgent {
             episode_rewards: Vec::new(),
             step_stats: VecDeque::with_capacity(10000),
             agi_reasoning: None,
+            agi_core: None,
         }
     }
 
@@ -1319,12 +1323,64 @@ impl SensorimotorAgent {
             episode_rewards: Vec::new(),
             step_stats: VecDeque::with_capacity(10000),
             agi_reasoning: Some(AGIReasoningSystem::new(n_streams, n_actions)),
+            agi_core: None,
+        }
+    }
+
+    /// Create a new sensorimotor agent with full AGI integration
+    /// This enables both AGIReasoningSystem AND AGICore for maximum capability compounding
+    pub fn with_full_agi(
+        transformer: CompoundingCohesionTransformer,
+        environment: Box<dyn Environment>,
+        config: SensorimotorConfig,
+        n_streams: usize,
+        n_actions: usize,
+        feature_dim: usize,
+        agi_core_config: Option<AGICoreConfig>,
+    ) -> Self {
+        let core_config = agi_core_config.unwrap_or_else(|| AGICoreConfig {
+            max_causal_variables: 50,
+            max_abstraction_depth: 4,
+            world_model_horizon: 15,
+            max_active_goals: 5,
+            meta_learning_window: 50,
+            max_symbols: 200,
+            causal_discovery_threshold: 0.25,
+            abstraction_merge_threshold: 0.80,
+            world_model_error_threshold: 0.15,
+            goal_completion_threshold: 0.85,
+            symbol_grounding_threshold: 0.6,
+        });
+
+        Self {
+            transformer,
+            motor_system: MotorSystem::new(),
+            environment,
+            config,
+            episode_count: 0,
+            total_steps: 0,
+            cumulative_reward: 0.0,
+            episode_rewards: Vec::new(),
+            step_stats: VecDeque::with_capacity(10000),
+            agi_reasoning: Some(AGIReasoningSystem::new(n_streams, n_actions)),
+            agi_core: Some(AGICore::new(core_config, feature_dim, n_actions)),
         }
     }
 
     /// Enable AGI reasoning on an existing agent
     pub fn enable_agi_reasoning(&mut self, n_streams: usize, n_actions: usize) {
         self.agi_reasoning = Some(AGIReasoningSystem::new(n_streams, n_actions));
+    }
+
+    /// Enable full AGI Core on an existing agent
+    pub fn enable_agi_core(
+        &mut self,
+        feature_dim: usize,
+        n_actions: usize,
+        config: Option<AGICoreConfig>,
+    ) {
+        let core_config = config.unwrap_or_default();
+        self.agi_core = Some(AGICore::new(core_config, feature_dim, n_actions));
     }
 
     /// Run a single episode
@@ -1498,6 +1554,44 @@ impl SensorimotorAgent {
                 None
             };
 
+            // 3.6. AGI Core: Use unified cognition to potentially drive action
+            // AGICore integrates: causal discovery, abstraction, world model, goals, meta-learning, symbols
+            if let Some(ref mut agi_core) = self.agi_core {
+                // Build state vector from current observation
+                let state_vec: Vec<f64> = vec![
+                    current_pos.x,
+                    current_pos.y,
+                    cohesion.hierarchy.global_coherence(),
+                    nearest_memory_similarity,
+                    cohesion.prediction.prediction_error,
+                ];
+
+                // Get recommended action from AGI Core (uses world model + goals)
+                if let Some(recommended_action) = agi_core.recommend_action(&state_vec) {
+                    // Map recommended action to movement direction
+                    let (dx, dy) = match recommended_action {
+                        0 => (0.0, 1.0),  // Up
+                        1 => (0.0, -1.0), // Down
+                        2 => (-1.0, 0.0), // Left
+                        3 => (1.0, 0.0),  // Right
+                        _ => (0.0, 0.0),  // Stay
+                    };
+
+                    // Override action with AGI Core recommendation
+                    action = Action {
+                        action_type: ActionType::MoveTo,
+                        target_pose: Some(Pose3D::new(
+                            current_pos.x + dx * 1.5,
+                            current_pos.y + dy * 1.5,
+                            0.0,
+                        )),
+                        parameters: vec![],
+                        confidence: 0.8, // High confidence from AGI Core
+                        source_goal: goal.goal_type,
+                    };
+                }
+            }
+
             // 4. Execute action in environment
             let result = self.environment.step(&action)?;
 
@@ -1601,6 +1695,61 @@ impl SensorimotorAgent {
                     4 // No target = Stay
                 };
                 agi.learn(&prev_state, action_idx, &next_state, augmented_reward);
+            }
+
+            // 5.10. AGI Core: Learn from observed transition (full state)
+            if let Some(ref mut agi_core) = self.agi_core {
+                // Build richer state vector for AGI Core
+                let state_vec: Vec<f64> = vec![
+                    current_pos.x,
+                    current_pos.y,
+                    self.transformer.cohesion().hierarchy.global_coherence(),
+                    nearest_memory_similarity,
+                    self.transformer.cohesion().prediction.prediction_error,
+                ];
+                let next_state_vec: Vec<f64> = vec![
+                    new_pos.x,
+                    new_pos.y,
+                    self.transformer.cohesion().hierarchy.global_coherence(),
+                    nearest_memory_similarity,
+                    self.transformer.cohesion().prediction.prediction_error,
+                ];
+
+                // Map action to index
+                let action_idx = if let Some(target) = action.target_pose {
+                    let dx = target.x - current_pos.x;
+                    let dy = target.y - current_pos.y;
+                    if dy.abs() > dx.abs() {
+                        if dy > 0.0 {
+                            0
+                        } else {
+                            1
+                        } // Up or Down
+                    } else if dx.abs() > 0.1 {
+                        if dx < 0.0 {
+                            2
+                        } else {
+                            3
+                        } // Left or Right
+                    } else {
+                        4 // Stay
+                    }
+                } else {
+                    4 // No target = Stay
+                };
+
+                // Process experience through AGI Core (causal discovery, world model, etc.)
+                agi_core.process_experience(
+                    &state_vec,
+                    action_idx,
+                    &next_state_vec,
+                    augmented_reward,
+                    result
+                        .observation
+                        .as_ref()
+                        .map(|o| o.terminal)
+                        .unwrap_or(false),
+                );
             }
 
             // 6. Update transformer meta-learning with augmented reward
@@ -1722,6 +1871,35 @@ impl SensorimotorAgent {
             String::from("\n├─ AGI Reasoning: disabled")
         };
 
+        let agi_core_summary = if let Some(ref core) = self.agi_core {
+            let s = core.summary();
+            format!(
+                "\n├─ AGI Core (Unified):\n\
+                 │  ├─ Causal Discovery: {} vars, MI={:.3}\n\
+                 │  ├─ Abstraction: {} concepts, depth={}\n\
+                 │  ├─ World Model: {} states, {} transitions\n\
+                 │  ├─ Goals: {} active, {:.0}% success\n\
+                 │  ├─ Meta-Learner: LR={:.4}, Exp={:.2}\n\
+                 │  ├─ Symbols: {} total, {} grounded\n\
+                 │  └─ Compound Rate: {:.3}",
+                s.causal_discovery.total_variables,
+                s.causal_discovery.avg_information_gain,
+                s.abstraction.total_concepts,
+                s.abstraction.max_depth,
+                s.world_model.total_states,
+                s.world_model.total_transitions,
+                s.goals.active_goals,
+                s.goals.success_rate * 100.0,
+                s.meta_learner.best_learning_rate,
+                s.meta_learner.best_exploration_rate,
+                s.symbols.total_symbols,
+                s.symbols.grounded_symbols,
+                s.analytics.compound_rate
+            )
+        } else {
+            String::from("\n├─ AGI Core: disabled")
+        };
+
         format!(
             "SensorimotorAgent Summary:\n\
              ├─ Episodes:        {}\n\
@@ -1729,7 +1907,7 @@ impl SensorimotorAgent {
              ├─ Avg Reward:      {:.4}\n\
              ├─ Cumulative:      {:.4}\n\
              ├─ Recent Coherence: {:.4}\n\
-             ├─ Motor Stats:     {:?}{}\n\
+             ├─ Motor Stats:     {:?}{}{}\n\
              └─ Transformer:\n{}",
             self.episode_count,
             self.total_steps,
@@ -1738,6 +1916,7 @@ impl SensorimotorAgent {
             recent_coherence,
             self.motor_system.stats(),
             agi_summary,
+            agi_core_summary,
             self.transformer.cohesion_summary(),
         )
     }
@@ -1784,6 +1963,89 @@ impl SensorimotorAgent {
                 } else {
                     "no"
                 }
+            )
+        })
+    }
+
+    /// Get AGI Core reference (if enabled)
+    pub fn agi_core(&self) -> Option<&AGICore> {
+        self.agi_core.as_ref()
+    }
+
+    /// Get mutable AGI Core reference (if enabled)
+    pub fn agi_core_mut(&mut self) -> Option<&mut AGICore> {
+        self.agi_core.as_mut()
+    }
+
+    /// Get AGI Core summary (if enabled)
+    pub fn agi_core_summary(&self) -> Option<String> {
+        self.agi_core.as_ref().map(|core| {
+            let s = core.summary();
+            format!(
+                "AGI Core Summary:\n\
+                 ├─ Step: {}\n\
+                 ├─ Causal Discovery:\n\
+                 │  ├─ Variables: {}\n\
+                 │  ├─ Observations: {}\n\
+                 │  └─ Avg Information Gain: {:.4}\n\
+                 ├─ Abstraction Hierarchy:\n\
+                 │  ├─ Concepts: {}\n\
+                 │  ├─ Max Depth: {}\n\
+                 │  └─ Avg Activation: {:.1}\n\
+                 ├─ World Model:\n\
+                 │  ├─ States: {}\n\
+                 │  ├─ Transitions: {}\n\
+                 │  └─ Experience: {}\n\
+                 ├─ Goal Hierarchy:\n\
+                 │  ├─ Total: {}\n\
+                 │  ├─ Active: {}\n\
+                 │  ├─ Completed: {}\n\
+                 │  └─ Success Rate: {:.1}%\n\
+                 ├─ Meta-Learner:\n\
+                 │  ├─ Episodes: {}\n\
+                 │  ├─ Best LR: {:.4}\n\
+                 │  └─ Best Exploration: {:.2}\n\
+                 ├─ Symbol System:\n\
+                 │  ├─ Symbols: {}\n\
+                 │  ├─ Grounded: {}\n\
+                 │  └─ Expressions: {}\n\
+                 └─ Compounding Analytics:\n\
+                    ├─ Discovery→Abstraction: {}\n\
+                    ├─ Abstraction→Symbols: {}\n\
+                    ├─ Symbols→Goals: {}\n\
+                    ├─ Goals→WorldModel: {}\n\
+                    ├─ WorldModel→Meta: {}\n\
+                    ├─ Meta→Discovery: {}\n\
+                    ├─ Total Interactions: {}\n\
+                    └─ Compound Rate: {:.4}",
+                s.current_step,
+                s.causal_discovery.total_variables,
+                s.causal_discovery.total_observations,
+                s.causal_discovery.avg_information_gain,
+                s.abstraction.total_concepts,
+                s.abstraction.max_depth,
+                s.abstraction.avg_activation,
+                s.world_model.total_states,
+                s.world_model.total_transitions,
+                s.world_model.total_experience,
+                s.goals.total_goals,
+                s.goals.active_goals,
+                s.goals.completed_goals,
+                s.goals.success_rate * 100.0,
+                s.meta_learner.total_episodes,
+                s.meta_learner.best_learning_rate,
+                s.meta_learner.best_exploration_rate,
+                s.symbols.total_symbols,
+                s.symbols.grounded_symbols,
+                s.symbols.total_expressions,
+                s.analytics.discovery_to_abstraction,
+                s.analytics.abstraction_to_symbols,
+                s.analytics.symbols_to_goals,
+                s.analytics.goals_to_world_model,
+                s.analytics.world_model_to_meta,
+                s.analytics.meta_to_discovery,
+                s.analytics.total_interactions,
+                s.analytics.compound_rate
             )
         })
     }

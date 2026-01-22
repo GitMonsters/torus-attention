@@ -79,28 +79,31 @@ tensorboard-rs = "0.5"
 chrono = "0.4"
 
 [features]
-# Default: CPU-only mode (no GPU acceleration)
-default = []
+# Default: AMD GPU acceleration enabled (Vulkan/WGPU)
+default = ["amd-gpu"]
 
 # GPU acceleration options
 cuda = ["candle-core/cuda"]   # NVIDIA GPU via CUDA
 metal = ["candle-core/metal"] # Apple GPU via Metal
 
-# AMD GPU support via Vulkan/WGPU (experimental)
+# AMD GPU support via Vulkan/WGPU
 # This enables burn-wgpu which uses Vulkan on AMD GPUs
 amd-gpu = ["burn", "burn-autodiff", "burn-wgpu"]
 
 # CPU-only burn backend (for testing)
 burn-cpu = ["burn", "burn-autodiff", "burn-ndarray"]
 
+# CPU-only mode (no GPU acceleration)
+cpu-only = []
+
 # Python bindings
 python = ["pyo3"]
 
 # Usage:
-# - CPU only:     cargo build --release
-# - NVIDIA CUDA:  cargo build --release --features cuda
-# - Apple Metal:  cargo build --release --features metal
-# - AMD GPU:      cargo build --release --features amd-gpu
+# - AMD GPU (default): cargo build --release
+# - CPU only:          cargo build --release --no-default-features
+# - NVIDIA CUDA:       cargo build --release --no-default-features --features cuda
+# - Apple Metal:       cargo build --release --no-default-features --features metal
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

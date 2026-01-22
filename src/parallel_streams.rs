@@ -11,12 +11,14 @@
 //! 8. Cross V→U      - minor to major coupling
 //!
 //! All streams execute in parallel using rayon, with learned mixing weights.
+//! GPU acceleration is automatic when the `amd-gpu` feature is enabled.
 
 use crate::geometry::TorusCoordinate;
+use crate::gpu_ops;
 use crate::periodic::PeriodicBoundary;
 use crate::rmsnorm::{rms_norm, RmsNorm};
 use crate::TorusResult;
-use candle_core::{DType, Device, IndexOp, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -347,9 +349,9 @@ impl ProcessingStream {
             .transpose(1, 2)?
             .contiguous()?;
 
-        // Attention scores
+        // Attention scores (GPU-accelerated when available)
         let k_t = k.transpose(2, 3)?.contiguous()?;
-        let scores = q.matmul(&k_t)?;
+        let scores = gpu_ops::matmul(&q, &k_t)?;
         let scores = (scores * self.scale)?;
 
         // Apply stream-specific mask
@@ -362,11 +364,11 @@ impl ProcessingStream {
         // Multiply scores by mask (soft masking)
         let scores = (scores * mask_broadcast)?;
 
-        // Softmax
-        let attn_weights = candle_nn::ops::softmax(&scores, D::Minus1)?;
+        // Softmax (GPU-accelerated when available)
+        let attn_weights = gpu_ops::softmax(&scores, 3)?;  // dim 3 for 4D tensor [B, H, S, S]
 
-        // Apply to values
-        let attn_output = attn_weights.matmul(&v)?;
+        // Apply to values (GPU-accelerated when available)
+        let attn_output = gpu_ops::matmul(&attn_weights, &v)?;
 
         // Reshape back
         let attn_output = attn_output.transpose(1, 2)?.reshape((

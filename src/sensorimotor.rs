@@ -2824,6 +2824,7 @@ pub struct DissonanceStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::DType;
 
     #[test]
     fn test_pose3d() {

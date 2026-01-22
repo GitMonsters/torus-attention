@@ -52,10 +52,11 @@
 
 // Core modules
 pub mod attention;
-pub mod backend;  // NEW: Multi-GPU backend abstraction
+pub mod backend;  // Multi-GPU backend abstraction
 pub mod dual_loop;
 pub mod error;
 pub mod geometry;
+pub mod gpu_ops;  // GPU-accelerated operations (auto-enabled with amd-gpu feature)
 pub mod periodic;
 pub mod vortex;
 

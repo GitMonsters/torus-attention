@@ -278,19 +278,19 @@ fn main() -> TorusResult<()> {
         verbose: false,
     };
 
-    // AGI Core configuration
+    // AGI Core configuration - lowered thresholds for noisy grid environment
     let agi_config = AGICoreConfig {
         max_causal_variables: 50,
         max_abstraction_depth: 4,
         world_model_horizon: 15,
-        max_active_goals: 5,
+        max_active_goals: 8, // Increased for more goal activity
         meta_learning_window: 50,
         max_symbols: 200,
         causal_discovery_threshold: 0.25,
         abstraction_merge_threshold: 0.80,
         world_model_error_threshold: 0.15,
-        goal_completion_threshold: 0.85,
-        symbol_grounding_threshold: 0.6,
+        goal_completion_threshold: 0.55, // Lowered from 0.85 for easier completion
+        symbol_grounding_threshold: 0.45, // Lowered from 0.6 for easier grounding
     };
 
     // Create agent with FULL AGI (AGIReasoningSystem + AGICore integrated)

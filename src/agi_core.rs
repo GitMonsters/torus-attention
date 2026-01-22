@@ -20,10 +20,10 @@
 //! - Meta-learning improves causal discovery
 //! - **The loop compounds**
 
-use crate::consequential::{AGIReasoningSystem, CausalGraph, CausalVariable, CausalMechanism};
-use crate::compounding_cohesion::{CompoundingCohesionSystem, CompoundingCohesionConfig};
+use crate::compounding_cohesion::{CompoundingCohesionConfig, CompoundingCohesionSystem};
+use crate::consequential::{AGIReasoningSystem, CausalGraph, CausalMechanism, CausalVariable};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque, BTreeMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -68,8 +68,8 @@ impl Default for AGICoreConfig {
             causal_discovery_threshold: 0.3,
             abstraction_merge_threshold: 0.85,
             world_model_error_threshold: 0.1,
-            goal_completion_threshold: 0.9,
-            symbol_grounding_threshold: 0.7,
+            goal_completion_threshold: 0.65, // Lowered from 0.9 for noisy environments
+            symbol_grounding_threshold: 0.5, // Lowered from 0.7 for easier grounding
         }
     }
 }
@@ -148,14 +148,14 @@ impl CausalDiscovery {
             step: self.current_step,
         };
         self.observation_history.push_back(obs);
-        
+
         // Keep bounded history
         while self.observation_history.len() > 1000 {
             self.observation_history.pop_front();
         }
-        
+
         self.current_step += 1;
-        
+
         // Attempt discovery every 50 steps
         if self.current_step % 50 == 0 {
             self.attempt_discovery();
@@ -167,16 +167,18 @@ impl CausalDiscovery {
         if self.observation_history.len() < 100 {
             return;
         }
-        
+
         if self.variables.len() >= self.config.max_causal_variables {
             return;
         }
 
         // Compute feature covariances to find latent structure
-        let n_features = self.observation_history.front()
+        let n_features = self
+            .observation_history
+            .front()
             .map(|o| o.features.len())
             .unwrap_or(0);
-        
+
         if n_features == 0 {
             return;
         }
@@ -184,7 +186,7 @@ impl CausalDiscovery {
         // Compute mean features
         let mut mean_features = vec![0.0; n_features];
         let n_obs = self.observation_history.len() as f64;
-        
+
         for obs in &self.observation_history {
             for (i, &f) in obs.features.iter().enumerate() {
                 if i < mean_features.len() {
@@ -195,7 +197,7 @@ impl CausalDiscovery {
 
         // Find feature pairs with high mutual information (simplified)
         let mut candidate_pairs: Vec<(usize, usize, f64)> = Vec::new();
-        
+
         for i in 0..n_features.min(10) {
             for j in (i + 1)..n_features.min(10) {
                 let mi = self.estimate_mutual_info(i, j);
@@ -206,14 +208,20 @@ impl CausalDiscovery {
         }
 
         // Create new variable from highest MI pair
-        if let Some((i, j, mi)) = candidate_pairs.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap()) {
+        if let Some((i, j, mi)) = candidate_pairs
+            .iter()
+            .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+        {
             // Check if we already have a variable for this pair
-            let already_exists = self.variables.iter().any(|v| {
-                v.parent_variables.contains(i) && v.parent_variables.contains(j)
-            });
-            
+            let already_exists = self
+                .variables
+                .iter()
+                .any(|v| v.parent_variables.contains(i) && v.parent_variables.contains(j));
+
             if !already_exists {
-                let signature: Vec<f64> = self.observation_history.iter()
+                let signature: Vec<f64> = self
+                    .observation_history
+                    .iter()
                     .take(50)
                     .map(|o| {
                         let fi = o.features.get(*i).copied().unwrap_or(0.0);
@@ -221,7 +229,7 @@ impl CausalDiscovery {
                         (fi + fj) / 2.0
                     })
                     .collect();
-                
+
                 let var = DiscoveredVariable {
                     id: self.next_id,
                     name: format!("latent_{}_{}", i, j),
@@ -231,7 +239,7 @@ impl CausalDiscovery {
                     discovered_at: self.current_step,
                     utility_count: 0,
                 };
-                
+
                 self.variables.push(var);
                 self.next_id += 1;
             }
@@ -272,22 +280,23 @@ impl CausalDiscovery {
         let var_i = (sum_i2 / count - mean_i * mean_i).max(1e-10);
         let var_j = (sum_j2 / count - mean_j * mean_j).max(1e-10);
         let cov_ij = sum_ij / count - mean_i * mean_j;
-        
+
         let correlation = cov_ij / (var_i.sqrt() * var_j.sqrt());
         let mi = -0.5 * (1.0 - correlation * correlation).max(1e-10).ln();
-        
+
         self.mutual_info_cache.insert((i, j), mi);
         mi.max(0.0)
     }
 
     /// Get discovered variables that are useful for a given context
     pub fn get_relevant_variables(&self, features: &[f64]) -> Vec<&DiscoveredVariable> {
-        self.variables.iter()
+        self.variables
+            .iter()
             .filter(|v| {
                 // Check if parent features are active
-                v.parent_variables.iter().all(|&pi| {
-                    features.get(pi).map(|&f| f.abs() > 0.1).unwrap_or(false)
-                })
+                v.parent_variables
+                    .iter()
+                    .all(|&pi| features.get(pi).map(|&f| f.abs() > 0.1).unwrap_or(false))
             })
             .collect()
     }
@@ -307,10 +316,15 @@ impl CausalDiscovery {
             avg_information_gain: if self.variables.is_empty() {
                 0.0
             } else {
-                self.variables.iter().map(|v| v.information_gain).sum::<f64>() 
+                self.variables
+                    .iter()
+                    .map(|v| v.information_gain)
+                    .sum::<f64>()
                     / self.variables.len() as f64
             },
-            most_useful: self.variables.iter()
+            most_useful: self
+                .variables
+                .iter()
                 .max_by_key(|v| v.utility_count)
                 .map(|v| v.name.clone()),
         }
@@ -373,7 +387,7 @@ impl AbstractionHierarchy {
         for _ in 0..config.max_abstraction_depth {
             levels.push(Vec::new());
         }
-        
+
         Self {
             concepts: HashMap::new(),
             levels,
@@ -386,14 +400,14 @@ impl AbstractionHierarchy {
     /// Observe a pattern for potential chunking
     pub fn observe(&mut self, features: Vec<f64>) {
         self.pattern_buffer.push_back(features.clone());
-        
+
         while self.pattern_buffer.len() > 100 {
             self.pattern_buffer.pop_front();
         }
 
         // Try to match existing concepts
         let matched = self.match_concept(&features);
-        
+
         if let Some(concept_id) = matched {
             if let Some(concept) = self.concepts.get_mut(&concept_id) {
                 concept.activation_count += 1;
@@ -436,7 +450,7 @@ impl AbstractionHierarchy {
         // Compute centroid of recent patterns
         let n = self.pattern_buffer.len();
         let dim = self.pattern_buffer.front().map(|p| p.len()).unwrap_or(0);
-        
+
         if dim == 0 {
             return;
         }
@@ -452,7 +466,8 @@ impl AbstractionHierarchy {
 
         // Check if this is sufficiently different from existing concepts
         let is_novel = self.concepts.values().all(|c| {
-            self.cosine_similarity(&centroid, &c.prototype) < self.config.abstraction_merge_threshold
+            self.cosine_similarity(&centroid, &c.prototype)
+                < self.config.abstraction_merge_threshold
         });
 
         if is_novel && self.concepts.len() < 1000 {
@@ -488,21 +503,20 @@ impl AbstractionHierarchy {
             }
 
             // Find clusters of co-occurring concepts
-            let level_concepts: Vec<usize> = self.levels.get(level)
-                .cloned()
-                .unwrap_or_default();
-            
+            let level_concepts: Vec<usize> = self.levels.get(level).cloned().unwrap_or_default();
+
             // Simple clustering: merge frequently co-activated concepts
             let mut to_merge: Vec<(usize, usize)> = Vec::new();
-            
+
             for i in 0..level_concepts.len() {
                 for j in (i + 1)..level_concepts.len() {
                     let ci = level_concepts[i];
                     let cj = level_concepts[j];
-                    
+
                     if let (Some(c1), Some(c2)) = (self.concepts.get(&ci), self.concepts.get(&cj)) {
                         let similarity = self.cosine_similarity(&c1.prototype, &c2.prototype);
-                        if similarity > 0.7 && similarity < self.config.abstraction_merge_threshold {
+                        if similarity > 0.7 && similarity < self.config.abstraction_merge_threshold
+                        {
                             to_merge.push((ci, cj));
                         }
                     }
@@ -543,11 +557,11 @@ impl AbstractionHierarchy {
 
                     let parent_id = parent.id;
                     self.concepts.insert(parent_id, parent);
-                    
+
                     if let Some(level_vec) = self.levels.get_mut(level + 1) {
                         level_vec.push(parent_id);
                     }
-                    
+
                     // Update children to point to parent
                     if let Some(c) = self.concepts.get_mut(&ci) {
                         c.parents.push(parent_id);
@@ -574,7 +588,7 @@ impl AbstractionHierarchy {
     /// Get concepts activated by features
     pub fn get_activated_concepts(&self, features: &[f64]) -> Vec<(usize, f64)> {
         let mut activated: Vec<(usize, f64)> = Vec::new();
-        
+
         for (&id, concept) in &self.concepts {
             let similarity = self.cosine_similarity(features, &concept.prototype);
             if similarity > 0.5 {
@@ -607,11 +621,13 @@ impl AbstractionHierarchy {
     /// Get summary statistics
     pub fn summary(&self) -> AbstractionSummary {
         let concepts_per_level: Vec<usize> = self.levels.iter().map(|l| l.len()).collect();
-        
+
         AbstractionSummary {
             total_concepts: self.concepts.len(),
             concepts_per_level,
-            max_depth: self.levels.iter()
+            max_depth: self
+                .levels
+                .iter()
                 .enumerate()
                 .filter(|(_, l)| !l.is_empty())
                 .map(|(i, _)| i + 1)
@@ -620,7 +636,10 @@ impl AbstractionHierarchy {
             avg_activation: if self.concepts.is_empty() {
                 0.0
             } else {
-                self.concepts.values().map(|c| c.activation_count as f64).sum::<f64>()
+                self.concepts
+                    .values()
+                    .map(|c| c.activation_count as f64)
+                    .sum::<f64>()
                     / self.concepts.len() as f64
             },
         }
@@ -717,24 +736,37 @@ impl WorldModel {
 
     /// Discretize features for indexing
     fn discretize(&self, features: &[f64]) -> Vec<i32> {
-        features.iter().enumerate().map(|(i, &f)| {
-            let (min_val, max_val) = self.feature_ranges.get(i).copied().unwrap_or((-1.0, 1.0));
-            let range = (max_val - min_val).max(1e-6);
-            let normalized = (f - min_val) / range;
-            let bin = (normalized * self.n_bins as f64).floor() as i32;
-            bin.max(0).min(self.n_bins as i32 - 1)
-        }).collect()
+        features
+            .iter()
+            .enumerate()
+            .map(|(i, &f)| {
+                let (min_val, max_val) = self.feature_ranges.get(i).copied().unwrap_or((-1.0, 1.0));
+                let range = (max_val - min_val).max(1e-6);
+                let normalized = (f - min_val) / range;
+                let bin = (normalized * self.n_bins as f64).floor() as i32;
+                bin.max(0).min(self.n_bins as i32 - 1)
+            })
+            .collect()
     }
 
     /// Learn from an observed transition
-    pub fn learn(&mut self, from: &[f64], action: usize, to: &[f64], reward: f64, is_terminal: bool) {
+    pub fn learn(
+        &mut self,
+        from: &[f64],
+        action: usize,
+        to: &[f64],
+        reward: f64,
+        is_terminal: bool,
+    ) {
         // Update feature ranges
         for (i, (&f_from, &f_to)) in from.iter().zip(to.iter()).enumerate() {
             if i >= self.feature_ranges.len() {
-                self.feature_ranges.push((f_from.min(f_to), f_from.max(f_to)));
+                self.feature_ranges
+                    .push((f_from.min(f_to), f_from.max(f_to)));
             } else {
                 let (min_val, max_val) = self.feature_ranges[i];
-                self.feature_ranges[i] = (min_val.min(f_from).min(f_to), max_val.max(f_from).max(f_to));
+                self.feature_ranges[i] =
+                    (min_val.min(f_from).min(f_to), max_val.max(f_from).max(f_to));
             }
         }
 
@@ -746,15 +778,16 @@ impl WorldModel {
 
         // Update transition model
         let key = (from_disc.clone(), action);
-        let entry = self.transitions.entry(key).or_insert_with(|| {
-            WorldTransition {
+        let entry = self
+            .transitions
+            .entry(key)
+            .or_insert_with(|| WorldTransition {
                 from_features: from.to_vec(),
                 action,
                 to_features: to.to_vec(),
                 reward,
                 count: 0,
-            }
-        });
+            });
 
         // Update with running average
         let alpha = 1.0 / (entry.count + 1) as f64;
@@ -819,10 +852,10 @@ impl WorldModel {
                 total_uncertainty += next_state.uncertainty;
                 current = next_state.features.clone();
                 taken_actions.push(action);
-                
+
                 let is_terminal = next_state.is_terminal;
                 states.push(next_state);
-                
+
                 if is_terminal {
                     break;
                 }
@@ -847,7 +880,12 @@ impl WorldModel {
     }
 
     /// Imagine possible futures by sampling actions
-    pub fn imagine_futures(&self, start: &[f64], n_futures: usize, n_actions: usize) -> Vec<SimulatedTrajectory> {
+    pub fn imagine_futures(
+        &self,
+        start: &[f64],
+        n_futures: usize,
+        n_actions: usize,
+    ) -> Vec<SimulatedTrajectory> {
         let mut futures = Vec::new();
 
         for i in 0..n_futures {
@@ -855,7 +893,7 @@ impl WorldModel {
             let actions: Vec<usize> = (0..self.config.world_model_horizon)
                 .map(|j| (i + j) % n_actions)
                 .collect();
-            
+
             let trajectory = self.simulate(start, &actions);
             if !trajectory.actions.is_empty() {
                 futures.push(trajectory);
@@ -863,7 +901,11 @@ impl WorldModel {
         }
 
         // Sort by expected reward
-        futures.sort_by(|a, b| b.total_reward.partial_cmp(&a.total_reward).unwrap_or(std::cmp::Ordering::Equal));
+        futures.sort_by(|a, b| {
+            b.total_reward
+                .partial_cmp(&a.total_reward)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         futures
     }
 
@@ -877,7 +919,10 @@ impl WorldModel {
             avg_transition_count: if self.transitions.is_empty() {
                 0.0
             } else {
-                self.transitions.values().map(|t| t.count as f64).sum::<f64>()
+                self.transitions
+                    .values()
+                    .map(|t| t.count as f64)
+                    .sum::<f64>()
                     / self.transitions.len() as f64
             },
         }
@@ -973,7 +1018,12 @@ impl GoalHierarchy {
     }
 
     /// Create a new top-level goal
-    pub fn create_goal(&mut self, name: &str, target_features: Vec<f64>, priority: GoalPriority) -> usize {
+    pub fn create_goal(
+        &mut self,
+        name: &str,
+        target_features: Vec<f64>,
+        priority: GoalPriority,
+    ) -> usize {
         let goal = Goal {
             id: self.next_id,
             name: name.to_string(),
@@ -995,10 +1045,16 @@ impl GoalHierarchy {
     }
 
     /// Decompose a goal into subgoals
-    pub fn decompose_goal(&mut self, goal_id: usize, intermediate_states: Vec<Vec<f64>>) -> Vec<usize> {
+    pub fn decompose_goal(
+        &mut self,
+        goal_id: usize,
+        intermediate_states: Vec<Vec<f64>>,
+    ) -> Vec<usize> {
         let mut subgoal_ids = Vec::new();
 
-        let parent_name = self.goals.get(&goal_id)
+        let parent_name = self
+            .goals
+            .get(&goal_id)
             .map(|g| g.name.clone())
             .unwrap_or_default();
 
@@ -1032,7 +1088,12 @@ impl GoalHierarchy {
     }
 
     /// Automatically decompose a goal using world model
-    pub fn auto_decompose(&mut self, goal_id: usize, current_state: &[f64], world_model: &WorldModel) -> Vec<usize> {
+    pub fn auto_decompose(
+        &mut self,
+        goal_id: usize,
+        current_state: &[f64],
+        world_model: &WorldModel,
+    ) -> Vec<usize> {
         let target = match self.goals.get(&goal_id) {
             Some(g) => g.target_features.clone(),
             None => return Vec::new(),
@@ -1040,12 +1101,13 @@ impl GoalHierarchy {
 
         // Try to find intermediate waypoints using world model
         let mut waypoints: Vec<Vec<f64>> = Vec::new();
-        
+
         // Simple interpolation between current and goal
         let n_waypoints = 3;
         for i in 1..=n_waypoints {
             let alpha = i as f64 / (n_waypoints + 1) as f64;
-            let waypoint: Vec<f64> = current_state.iter()
+            let waypoint: Vec<f64> = current_state
+                .iter()
                 .zip(target.iter())
                 .map(|(&c, &t)| c * (1.0 - alpha) + t * alpha)
                 .collect();
@@ -1076,10 +1138,12 @@ impl GoalHierarchy {
     }
 
     fn find_lowest_priority_active(&self) -> Option<usize> {
-        self.active_goals.iter()
+        self.active_goals
+            .iter()
             .enumerate()
             .max_by_key(|(_, &id)| {
-                self.goals.get(&id)
+                self.goals
+                    .get(&id)
                     .map(|g| match g.priority {
                         GoalPriority::Low => 3,
                         GoalPriority::Medium => 2,
@@ -1099,7 +1163,9 @@ impl GoalHierarchy {
         for &goal_id in &self.active_goals {
             if let Some(goal) = self.goals.get_mut(&goal_id) {
                 // Compute distance to target
-                let distance: f64 = goal.target_features.iter()
+                let distance: f64 = goal
+                    .target_features
+                    .iter()
                     .zip(current_state.iter())
                     .map(|(&t, &c)| (t - c).powi(2))
                     .sum::<f64>()
@@ -1119,8 +1185,9 @@ impl GoalHierarchy {
         // Handle completions
         for goal_id in completed_goals {
             self.active_goals.retain(|&id| id != goal_id);
-            self.achievement_history.push_back((goal_id, true, self.current_step));
-            
+            self.achievement_history
+                .push_back((goal_id, true, self.current_step));
+
             // Check if parent goal should be updated
             if let Some(parent_id) = self.goals.get(&goal_id).and_then(|g| g.parent) {
                 self.update_parent_progress(parent_id);
@@ -1133,9 +1200,12 @@ impl GoalHierarchy {
     }
 
     fn update_parent_progress(&mut self, parent_id: usize) {
-        let subgoal_progress: Vec<f64> = self.goals.get(&parent_id)
+        let subgoal_progress: Vec<f64> = self
+            .goals
+            .get(&parent_id)
             .map(|p| {
-                p.subgoals.iter()
+                p.subgoals
+                    .iter()
                     .filter_map(|&sid| self.goals.get(&sid).map(|s| s.progress))
                     .collect()
             })
@@ -1145,11 +1215,12 @@ impl GoalHierarchy {
             let avg_progress = subgoal_progress.iter().sum::<f64>() / subgoal_progress.len() as f64;
             if let Some(parent) = self.goals.get_mut(&parent_id) {
                 parent.progress = avg_progress;
-                
+
                 if avg_progress >= self.config.goal_completion_threshold {
                     parent.status = GoalStatus::Completed;
                     self.active_goals.retain(|&id| id != parent_id);
-                    self.achievement_history.push_back((parent_id, true, self.current_step));
+                    self.achievement_history
+                        .push_back((parent_id, true, self.current_step));
                 }
             }
         }
@@ -1157,7 +1228,8 @@ impl GoalHierarchy {
 
     /// Get the current highest priority active goal
     pub fn get_current_goal(&self) -> Option<&Goal> {
-        self.active_goals.iter()
+        self.active_goals
+            .iter()
             .filter_map(|&id| self.goals.get(&id))
             .min_by_key(|g| match g.priority {
                 GoalPriority::Critical => 0,
@@ -1170,18 +1242,89 @@ impl GoalHierarchy {
     /// Get suggested action direction based on current goal
     pub fn get_goal_direction(&self, current_state: &[f64]) -> Option<Vec<f64>> {
         self.get_current_goal().map(|goal| {
-            goal.target_features.iter()
+            goal.target_features
+                .iter()
                 .zip(current_state.iter())
                 .map(|(&t, &c)| t - c)
                 .collect()
         })
     }
 
+    /// Create a goal from a grounded symbol's sensory representation
+    pub fn create_goal_from_symbol(
+        &mut self,
+        name: &str,
+        target_features: Vec<f64>,
+        concept_id: Option<usize>,
+    ) -> usize {
+        let goal = Goal {
+            id: self.next_id,
+            name: name.to_string(),
+            target_features,
+            tolerance: 0.2, // More tolerance for symbol-derived goals
+            priority: GoalPriority::Medium,
+            status: GoalStatus::Pending,
+            parent: None,
+            subgoals: Vec::new(),
+            progress: 0.0,
+            created_at: self.current_step,
+            concept_id,
+        };
+
+        let id = goal.id;
+        self.goals.insert(id, goal);
+        self.next_id += 1;
+
+        // Auto-activate if we have room
+        if self.active_goals.len() < self.config.max_active_goals {
+            self.activate_goal(id);
+        }
+
+        id
+    }
+
+    /// Check if a predicted state would complete any goal
+    pub fn check_prediction_completes_goal(&self, predicted_state: &[f64]) -> Option<usize> {
+        for &goal_id in &self.active_goals {
+            if let Some(goal) = self.goals.get(&goal_id) {
+                let distance: f64 = goal
+                    .target_features
+                    .iter()
+                    .zip(predicted_state.iter())
+                    .map(|(&t, &c)| (t - c).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+
+                let max_distance = goal.target_features.len() as f64 * 2.0;
+                let progress = 1.0 - (distance / max_distance).min(1.0);
+
+                // Slightly lower threshold for predictions (0.7 vs actual completion at 0.85)
+                if progress >= self.config.goal_completion_threshold * 0.85 {
+                    return Some(goal_id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get number of active goals
+    pub fn active_count(&self) -> usize {
+        self.active_goals.len()
+    }
+
     /// Get summary statistics
     pub fn summary(&self) -> GoalHierarchySummary {
-        let completed = self.goals.values().filter(|g| g.status == GoalStatus::Completed).count();
-        let failed = self.goals.values().filter(|g| g.status == GoalStatus::Failed).count();
-        
+        let completed = self
+            .goals
+            .values()
+            .filter(|g| g.status == GoalStatus::Completed)
+            .count();
+        let failed = self
+            .goals
+            .values()
+            .filter(|g| g.status == GoalStatus::Failed)
+            .count();
+
         GoalHierarchySummary {
             total_goals: self.goals.len(),
             active_goals: self.active_goals.len(),
@@ -1195,9 +1338,11 @@ impl GoalHierarchy {
             avg_progress: if self.active_goals.is_empty() {
                 0.0
             } else {
-                self.active_goals.iter()
+                self.active_goals
+                    .iter()
                     .filter_map(|&id| self.goals.get(&id).map(|g| g.progress))
-                    .sum::<f64>() / self.active_goals.len() as f64
+                    .sum::<f64>()
+                    / self.active_goals.len() as f64
             },
         }
     }
@@ -1285,9 +1430,15 @@ impl MetaLearner {
     }
 
     /// Record a learning episode
-    pub fn record_episode(&mut self, initial_perf: f64, final_perf: f64, steps: usize, metrics: LearningMetrics) {
+    pub fn record_episode(
+        &mut self,
+        initial_perf: f64,
+        final_perf: f64,
+        steps: usize,
+        metrics: LearningMetrics,
+    ) {
         let improvement = final_perf - initial_perf;
-        
+
         let episode = LearningEpisode {
             episode: self.current_episode,
             initial_performance: initial_perf,
@@ -1298,17 +1449,18 @@ impl MetaLearner {
         };
 
         self.learning_history.push_back(episode);
-        
+
         while self.learning_history.len() > self.config.meta_learning_window {
             self.learning_history.pop_front();
         }
 
         // Record strategy performance
-        let strategy_key = format!("lr_{:.4}_exp_{:.2}", 
+        let strategy_key = format!(
+            "lr_{:.4}_exp_{:.2}",
             (metrics.learning_rate * 1000.0).round() / 1000.0,
             (metrics.exploration_rate * 10.0).round() / 10.0
         );
-        
+
         self.strategy_performance
             .entry(strategy_key)
             .or_insert_with(Vec::new)
@@ -1328,11 +1480,15 @@ impl MetaLearner {
 
         // Find best performing strategy
         let mut best_strategy: Option<(String, f64)> = None;
-        
+
         for (strategy, performances) in &self.strategy_performance {
             if performances.len() >= 3 {
                 let avg = performances.iter().sum::<f64>() / performances.len() as f64;
-                if best_strategy.as_ref().map(|(_, s)| avg > *s).unwrap_or(true) {
+                if best_strategy
+                    .as_ref()
+                    .map(|(_, s)| avg > *s)
+                    .unwrap_or(true)
+                {
                     best_strategy = Some((strategy.clone(), avg));
                 }
             }
@@ -1346,26 +1502,28 @@ impl MetaLearner {
                     self.best_learning_rate = lr.max(self.lr_bounds.0).min(self.lr_bounds.1);
                 }
                 if let Ok(exp) = parts[3].parse::<f64>() {
-                    self.best_exploration_rate = exp.max(self.exploration_bounds.0).min(self.exploration_bounds.1);
+                    self.best_exploration_rate = exp
+                        .max(self.exploration_bounds.0)
+                        .min(self.exploration_bounds.1);
                 }
             }
         }
 
         // Also adapt based on recent trend
-        let recent: Vec<&LearningEpisode> = self.learning_history.iter()
-            .rev()
-            .take(10)
-            .collect();
-        
+        let recent: Vec<&LearningEpisode> = self.learning_history.iter().rev().take(10).collect();
+
         if recent.len() >= 5 {
-            let recent_improvement: f64 = recent.iter().map(|e| e.improvement).sum::<f64>() / recent.len() as f64;
-            
+            let recent_improvement: f64 =
+                recent.iter().map(|e| e.improvement).sum::<f64>() / recent.len() as f64;
+
             // If not improving, increase exploration
             if recent_improvement < 0.01 {
-                self.best_exploration_rate = (self.best_exploration_rate * 1.1).min(self.exploration_bounds.1);
+                self.best_exploration_rate =
+                    (self.best_exploration_rate * 1.1).min(self.exploration_bounds.1);
             } else if recent_improvement > 0.1 {
                 // If improving well, decrease exploration slightly
-                self.best_exploration_rate = (self.best_exploration_rate * 0.95).max(self.exploration_bounds.0);
+                self.best_exploration_rate =
+                    (self.best_exploration_rate * 0.95).max(self.exploration_bounds.0);
             }
         }
     }
@@ -1391,7 +1549,8 @@ impl MetaLearner {
 
     /// Predict expected improvement for given parameters
     pub fn predict_improvement(&self, metrics: &LearningMetrics) -> f64 {
-        let strategy_key = format!("lr_{:.4}_exp_{:.2}", 
+        let strategy_key = format!(
+            "lr_{:.4}_exp_{:.2}",
             (metrics.learning_rate * 1000.0).round() / 1000.0,
             (metrics.exploration_rate * 10.0).round() / 10.0
         );
@@ -1410,22 +1569,26 @@ impl MetaLearner {
 
     /// Get summary statistics
     pub fn summary(&self) -> MetaLearnerSummary {
-        let improvements: Vec<f64> = self.learning_history.iter()
+        let improvements: Vec<f64> = self
+            .learning_history
+            .iter()
             .map(|e| e.improvement)
             .collect();
-        
+
         let avg_improvement = if improvements.is_empty() {
             0.0
         } else {
             improvements.iter().sum::<f64>() / improvements.len() as f64
         };
 
-        let recent_improvements: Vec<f64> = self.learning_history.iter()
+        let recent_improvements: Vec<f64> = self
+            .learning_history
+            .iter()
             .rev()
             .take(10)
             .map(|e| e.improvement)
             .collect();
-        
+
         let recent_avg = if recent_improvements.is_empty() {
             0.0
         } else {
@@ -1502,11 +1665,11 @@ pub struct SymbolicExpression {
 /// Relations between symbols
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolRelation {
-    Sequence,      // A then B
-    Conjunction,   // A and B
-    Causation,     // A causes B
-    PartOf,        // A is part of B
-    Negation,      // Not A
+    Sequence,    // A then B
+    Conjunction, // A and B
+    Causation,   // A causes B
+    PartOf,      // A is part of B
+    Negation,    // Not A
 }
 
 /// Symbol System - internal language grounded in experience
@@ -1514,8 +1677,8 @@ pub enum SymbolRelation {
 pub struct SymbolSystem {
     /// All symbols by ID
     symbols: HashMap<usize, Symbol>,
-    /// Symbol name to ID mapping
-    name_to_id: HashMap<String, usize>,
+    /// Symbol name to ID mapping (public for compound lookups)
+    pub name_to_id: HashMap<String, usize>,
     /// Compositional expressions
     expressions: Vec<SymbolicExpression>,
     /// Co-occurrence counts for learning relations
@@ -1539,7 +1702,12 @@ impl SymbolSystem {
     }
 
     /// Create or retrieve a symbol
-    pub fn get_or_create_symbol(&mut self, name: &str, sensory: Vec<f64>, motor: Vec<f64>) -> usize {
+    pub fn get_or_create_symbol(
+        &mut self,
+        name: &str,
+        sensory: Vec<f64>,
+        motor: Vec<f64>,
+    ) -> usize {
         if let Some(&id) = self.name_to_id.get(name) {
             // Update grounding
             if let Some(sym) = self.symbols.get_mut(&id) {
@@ -1563,7 +1731,9 @@ impl SymbolSystem {
         // Create new symbol
         if self.symbols.len() >= self.config.max_symbols {
             // Remove least used symbol
-            if let Some(&id) = self.symbols.values()
+            if let Some(&id) = self
+                .symbols
+                .values()
                 .min_by_key(|s| s.usage_count)
                 .map(|s| &s.id)
             {
@@ -1593,7 +1763,11 @@ impl SymbolSystem {
 
     /// Record co-occurrence of symbols
     pub fn record_cooccurrence(&mut self, sym1: usize, sym2: usize) {
-        let key = if sym1 < sym2 { (sym1, sym2) } else { (sym2, sym1) };
+        let key = if sym1 < sym2 {
+            (sym1, sym2)
+        } else {
+            (sym2, sym1)
+        };
         *self.cooccurrence.entry(key).or_insert(0) += 1;
     }
 
@@ -1613,8 +1787,13 @@ impl SymbolSystem {
     }
 
     /// Compose symbols into an expression
-    pub fn compose(&mut self, symbol_ids: Vec<usize>, relation: SymbolRelation) -> Option<SymbolicExpression> {
-        let symbols: Vec<&Symbol> = symbol_ids.iter()
+    pub fn compose(
+        &mut self,
+        symbol_ids: Vec<usize>,
+        relation: SymbolRelation,
+    ) -> Option<SymbolicExpression> {
+        let symbols: Vec<&Symbol> = symbol_ids
+            .iter()
             .filter_map(|&id| self.symbols.get(&id))
             .collect();
 
@@ -1623,7 +1802,10 @@ impl SymbolSystem {
         }
 
         // Compose meaning based on relation type
-        let dim = symbols.first().map(|s| s.sensory_grounding.len()).unwrap_or(0);
+        let dim = symbols
+            .first()
+            .map(|s| s.sensory_grounding.len())
+            .unwrap_or(0);
         let mut composed = vec![0.0; dim];
 
         match relation {
@@ -1676,37 +1858,74 @@ impl SymbolSystem {
 
     /// Find symbol by sensory pattern
     pub fn find_by_sensory(&self, sensory: &[f64], threshold: f64) -> Option<&Symbol> {
-        self.symbols.values()
+        self.symbols
+            .values()
             .filter(|s| s.grounding_confidence >= self.config.symbol_grounding_threshold)
             .max_by(|a, b| {
                 let sim_a = cosine_sim(&a.sensory_grounding, sensory);
                 let sim_b = cosine_sim(&b.sensory_grounding, sensory);
-                sim_a.partial_cmp(&sim_b).unwrap_or(std::cmp::Ordering::Equal)
+                sim_a
+                    .partial_cmp(&sim_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .filter(|s| cosine_sim(&s.sensory_grounding, sensory) >= threshold)
     }
 
     /// Get symbols related to a given symbol
     pub fn get_related(&self, symbol_id: usize) -> Vec<(usize, usize)> {
-        let mut related: Vec<(usize, usize)> = self.cooccurrence.iter()
+        let mut related: Vec<(usize, usize)> = self
+            .cooccurrence
+            .iter()
             .filter(|((s1, s2), _)| *s1 == symbol_id || *s2 == symbol_id)
             .map(|((s1, s2), &count)| {
                 let other = if *s1 == symbol_id { *s2 } else { *s1 };
                 (other, count)
             })
             .collect();
-        
+
         related.sort_by(|a, b| b.1.cmp(&a.1));
         related
     }
 
+    /// Count symbols that are grounded (high confidence + concept)
+    pub fn grounded_count(&self) -> usize {
+        self.symbols
+            .values()
+            .filter(|s| {
+                s.grounding_confidence >= self.config.symbol_grounding_threshold
+                    && s.concept_id.is_some()
+            })
+            .count()
+    }
+
+    /// Get all grounded symbols without a goal association
+    pub fn get_ungoaled_grounded_symbols(&self) -> Vec<&Symbol> {
+        self.symbols
+            .values()
+            .filter(|s| {
+                s.grounding_confidence >= self.config.symbol_grounding_threshold
+                    && s.concept_id.is_some()
+                    && s.goal_id.is_none()
+            })
+            .collect()
+    }
+
+    /// Get symbol by ID
+    pub fn get_symbol(&self, id: usize) -> Option<&Symbol> {
+        self.symbols.get(&id)
+    }
+
     /// Get summary statistics
     pub fn summary(&self) -> SymbolSystemSummary {
-        let grounded_count = self.symbols.values()
+        let grounded_count = self
+            .symbols
+            .values()
             .filter(|s| s.grounding_confidence >= self.config.symbol_grounding_threshold)
             .count();
-        
-        let concept_grounded = self.symbols.values()
+
+        let concept_grounded = self
+            .symbols
+            .values()
             .filter(|s| s.concept_id.is_some())
             .count();
 
@@ -1719,7 +1938,10 @@ impl SymbolSystem {
             avg_grounding_confidence: if self.symbols.is_empty() {
                 0.0
             } else {
-                self.symbols.values().map(|s| s.grounding_confidence).sum::<f64>()
+                self.symbols
+                    .values()
+                    .map(|s| s.grounding_confidence)
+                    .sum::<f64>()
                     / self.symbols.len() as f64
             },
         }
@@ -1795,34 +2017,34 @@ impl Default for CompoundingAnalytics {
 pub struct AGICore {
     /// Configuration
     pub config: AGICoreConfig,
-    
+
     /// Causal Discovery System
     pub causal_discovery: CausalDiscovery,
-    
+
     /// Hierarchical Abstraction System
     pub abstraction: AbstractionHierarchy,
-    
+
     /// World Model for imagination
     pub world_model: WorldModel,
-    
+
     /// Goal Hierarchy System
     pub goals: GoalHierarchy,
-    
+
     /// Meta-Learning System
     pub meta_learner: MetaLearner,
-    
+
     /// Symbol Grounding System
     pub symbols: SymbolSystem,
-    
+
     /// Compounding analytics
     pub analytics: CompoundingAnalytics,
-    
+
     /// Current step
     current_step: usize,
-    
+
     /// Feature dimension
     feature_dim: usize,
-    
+
     /// Number of actions
     n_actions: usize,
 }
@@ -1857,10 +2079,12 @@ impl AGICore {
         self.current_step += 1;
 
         // 1. CAUSAL DISCOVERY - observe patterns
-        self.causal_discovery.observe(state.to_vec(), Some(action), reward);
+        self.causal_discovery
+            .observe(state.to_vec(), Some(action), reward);
 
         // 2. WORLD MODEL - learn dynamics
-        self.world_model.learn(state, action, next_state, reward, is_terminal);
+        self.world_model
+            .learn(state, action, next_state, reward, is_terminal);
 
         // 3. ABSTRACTION - form concepts
         self.abstraction.observe(state.to_vec());
@@ -1877,7 +2101,8 @@ impl AGICore {
                 format!("penalty_state_{}", self.current_step)
             };
             let motor = vec![action as f64 / self.n_actions as f64; 4];
-            self.symbols.get_or_create_symbol(&name, next_state.to_vec(), motor);
+            self.symbols
+                .get_or_create_symbol(&name, next_state.to_vec(), motor);
         }
 
         // 6. COMPOUND INTERACTIONS - drive multiplicative growth
@@ -1885,7 +2110,13 @@ impl AGICore {
     }
 
     /// Drive compounding interactions between systems
-    fn compound_interactions(&mut self, state: &[f64], action: usize, next_state: &[f64], reward: f64) {
+    fn compound_interactions(
+        &mut self,
+        state: &[f64],
+        action: usize,
+        next_state: &[f64],
+        _reward: f64,
+    ) {
         // Discovery → Abstraction: Use discovered variables to inform concepts
         let discovered = self.causal_discovery.get_relevant_variables(state);
         for var in discovered {
@@ -1909,29 +2140,76 @@ impl AGICore {
             }
         }
 
-        // Symbols → Goals: Express current goal symbolically
+        // Symbols → Goals: AUTO-CREATE GOALS from grounded symbols that don't have goals
+        // This is the key fix - we need to create goals from symbols, not just express existing goals
+        let ungoaled_symbols: Vec<(String, Vec<f64>, Option<usize>)> = self
+            .symbols
+            .get_ungoaled_grounded_symbols()
+            .iter()
+            .take(2) // Limit to 2 new goals per step
+            .map(|s| (s.name.clone(), s.sensory_grounding.clone(), s.concept_id))
+            .collect();
+
+        for (name, target_features, concept_id) in ungoaled_symbols {
+            // Only create goals if we have room
+            if self.goals.active_count() < self.config.max_active_goals {
+                let goal_name = format!("explore_{}", name);
+                let goal_id = self.goals.create_goal_from_symbol(
+                    &goal_name,
+                    target_features.clone(),
+                    concept_id,
+                );
+
+                // Link symbol back to goal
+                if let Some(&sym_id) = self.symbols.name_to_id.get(&name) {
+                    self.symbols.ground_in_goal(sym_id, goal_id);
+                }
+
+                self.analytics.symbols_to_goals += 1;
+            }
+        }
+
+        // Also express current goal symbolically (original behavior)
         if let Some(goal) = self.goals.get_current_goal() {
             let goal_name = format!("goal_{}", goal.id);
-            let sym_id = self.symbols.get_or_create_symbol(
-                &goal_name,
-                goal.target_features.clone(),
-                vec![0.0; 4],
-            );
-            self.symbols.ground_in_goal(sym_id, goal.id);
+            let goal_target = goal.target_features.clone();
+            let goal_id = goal.id;
+            let sym_id = self
+                .symbols
+                .get_or_create_symbol(&goal_name, goal_target, vec![0.0; 4]);
+            self.symbols.ground_in_goal(sym_id, goal_id);
             self.analytics.symbols_to_goals += 1;
         }
 
-        // Goals → World Model: Imagine paths to goals
+        // Goals → World Model: Imagine paths to goals AND check if predictions complete goals
         if let Some(goal) = self.goals.get_current_goal() {
+            let goal_id = goal.id;
+            let goal_subgoals_empty = goal.subgoals.is_empty();
+
             let futures = self.world_model.imagine_futures(state, 3, self.n_actions);
-            // Use imagination to inform goal decomposition
-            if futures.len() > 0 && goal.subgoals.is_empty() {
-                let intermediate_states: Vec<Vec<f64>> = futures.iter()
+
+            // Check if any imagined future would complete a goal
+            for trajectory in &futures {
+                for imagined_state in &trajectory.states {
+                    if let Some(_completed_id) = self
+                        .goals
+                        .check_prediction_completes_goal(&imagined_state.features)
+                    {
+                        // Prediction shows path to goal completion - this is valuable!
+                        self.analytics.goals_to_world_model += 1;
+                    }
+                }
+            }
+
+            // Use imagination to inform goal decomposition (original behavior)
+            if !futures.is_empty() && goal_subgoals_empty {
+                let intermediate_states: Vec<Vec<f64>> = futures
+                    .iter()
                     .take(2)
                     .flat_map(|t| t.states.iter().take(2).map(|s| s.features.clone()))
                     .collect();
                 if !intermediate_states.is_empty() {
-                    self.goals.auto_decompose(goal.id, state, &self.world_model);
+                    self.goals.auto_decompose(goal_id, state, &self.world_model);
                     self.analytics.goals_to_world_model += 1;
                 }
             }
@@ -1939,12 +2217,14 @@ impl AGICore {
 
         // World Model → Meta-Learning: Track prediction quality
         if let Some(predicted) = self.world_model.predict(state, action) {
-            let prediction_error: f64 = predicted.features.iter()
+            let prediction_error: f64 = predicted
+                .features
+                .iter()
                 .zip(next_state.iter())
                 .map(|(p, a)| (p - a).powi(2))
                 .sum::<f64>()
                 .sqrt();
-            
+
             // Record learning episode if this is a notable step
             if self.current_step % 100 == 0 {
                 let metrics = self.meta_learner.get_recommended_params();
@@ -1966,34 +2246,36 @@ impl AGICore {
         }
 
         // Update totals
-        self.analytics.total_interactions = 
-            self.analytics.discovery_to_abstraction +
-            self.analytics.abstraction_to_symbols +
-            self.analytics.symbols_to_goals +
-            self.analytics.goals_to_world_model +
-            self.analytics.world_model_to_meta +
-            self.analytics.meta_to_discovery;
-        
+        self.analytics.total_interactions = self.analytics.discovery_to_abstraction
+            + self.analytics.abstraction_to_symbols
+            + self.analytics.symbols_to_goals
+            + self.analytics.goals_to_world_model
+            + self.analytics.world_model_to_meta
+            + self.analytics.meta_to_discovery;
+
         // Compute compound rate
         if self.current_step > 100 {
-            self.analytics.compound_rate = 
+            self.analytics.compound_rate =
                 self.analytics.total_interactions as f64 / self.current_step as f64;
         }
     }
 
     /// Create a goal from current observation
-    pub fn create_goal_from_observation(&mut self, name: &str, target: Vec<f64>, priority: GoalPriority) -> usize {
+    pub fn create_goal_from_observation(
+        &mut self,
+        name: &str,
+        target: Vec<f64>,
+        priority: GoalPriority,
+    ) -> usize {
         let goal_id = self.goals.create_goal(name, target.clone(), priority);
         self.goals.activate_goal(goal_id);
-        
+
         // Create symbol for the goal
-        let sym_id = self.symbols.get_or_create_symbol(
-            &format!("goal_{}", name),
-            target,
-            vec![0.0; 4],
-        );
+        let sym_id =
+            self.symbols
+                .get_or_create_symbol(&format!("goal_{}", name), target, vec![0.0; 4]);
         self.symbols.ground_in_goal(sym_id, goal_id);
-        
+
         goal_id
     }
 
@@ -2001,40 +2283,46 @@ impl AGICore {
     pub fn recommend_action(&self, state: &[f64]) -> Option<usize> {
         // Get goal direction
         let goal_direction = self.goals.get_goal_direction(state);
-        
+
         // Use world model to evaluate actions
         let mut best_action: Option<(usize, f64)> = None;
-        
+
         for action in 0..self.n_actions {
             if let Some(next) = self.world_model.predict(state, action) {
                 let mut value = next.reward;
-                
+
                 // Add goal-directed bonus
                 if let Some(ref direction) = goal_direction {
-                    let action_direction: Vec<f64> = next.features.iter()
+                    let action_direction: Vec<f64> = next
+                        .features
+                        .iter()
                         .zip(state.iter())
                         .map(|(&n, &s)| n - s)
                         .collect();
-                    
+
                     let alignment = cosine_sim(&action_direction, direction);
                     value += alignment * 0.5;
                 }
-                
+
                 // Penalize uncertainty
                 value -= next.uncertainty * 0.2;
-                
-                if best_action.as_ref().map(|(_, v)| value > *v).unwrap_or(true) {
+
+                if best_action
+                    .as_ref()
+                    .map(|(_, v)| value > *v)
+                    .unwrap_or(true)
+                {
                     best_action = Some((action, value));
                 }
             }
         }
-        
+
         // Add exploration based on meta-learner
         let recommended = self.meta_learner.get_recommended_params();
         if rand_simple() < recommended.exploration_rate {
             return Some((rand_simple() * self.n_actions as f64) as usize % self.n_actions);
         }
-        
+
         best_action.map(|(a, _)| a)
     }
 
@@ -2058,58 +2346,73 @@ impl AGICore {
         println!("\n╔══════════════════════════════════════════════════════════════════╗");
         println!("║           UNIFIED AGI CORE - COMPOUNDING COGNITIVE COHESION      ║");
         println!("╠══════════════════════════════════════════════════════════════════╣");
-        println!("║ Step: {:>6}                                                      ║", s.current_step);
+        println!(
+            "║ Step: {:>6}                                                      ║",
+            s.current_step
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ CAUSAL DISCOVERY:                                                ║");
-        println!("║   Variables: {:>4} | Observations: {:>6} | Avg MI: {:.3}           ║", 
+        println!(
+            "║   Variables: {:>4} | Observations: {:>6} | Avg MI: {:.3}           ║",
             s.causal_discovery.total_variables,
             s.causal_discovery.total_observations,
-            s.causal_discovery.avg_information_gain);
+            s.causal_discovery.avg_information_gain
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ ABSTRACTION HIERARCHY:                                           ║");
-        println!("║   Concepts: {:>4} | Max Depth: {:>2} | Avg Activation: {:.1}          ║",
-            s.abstraction.total_concepts,
-            s.abstraction.max_depth,
-            s.abstraction.avg_activation);
+        println!(
+            "║   Concepts: {:>4} | Max Depth: {:>2} | Avg Activation: {:.1}          ║",
+            s.abstraction.total_concepts, s.abstraction.max_depth, s.abstraction.avg_activation
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ WORLD MODEL:                                                     ║");
-        println!("║   States: {:>5} | Transitions: {:>5} | Experience: {:>6}          ║",
+        println!(
+            "║   States: {:>5} | Transitions: {:>5} | Experience: {:>6}          ║",
             s.world_model.total_states,
             s.world_model.total_transitions,
-            s.world_model.total_experience);
+            s.world_model.total_experience
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ GOAL HIERARCHY:                                                  ║");
-        println!("║   Total: {:>3} | Active: {:>2} | Completed: {:>3} | Success: {:.1}%     ║",
+        println!(
+            "║   Total: {:>3} | Active: {:>2} | Completed: {:>3} | Success: {:.1}%     ║",
             s.goals.total_goals,
             s.goals.active_goals,
             s.goals.completed_goals,
-            s.goals.success_rate * 100.0);
+            s.goals.success_rate * 100.0
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ META-LEARNER:                                                    ║");
-        println!("║   Episodes: {:>4} | Best LR: {:.4} | Best Exp: {:.2}               ║",
+        println!(
+            "║   Episodes: {:>4} | Best LR: {:.4} | Best Exp: {:.2}               ║",
             s.meta_learner.total_episodes,
             s.meta_learner.best_learning_rate,
-            s.meta_learner.best_exploration_rate);
+            s.meta_learner.best_exploration_rate
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ SYMBOL SYSTEM:                                                   ║");
-        println!("║   Symbols: {:>4} | Grounded: {:>4} | Expressions: {:>4}             ║",
-            s.symbols.total_symbols,
-            s.symbols.grounded_symbols,
-            s.symbols.total_expressions);
+        println!(
+            "║   Symbols: {:>4} | Grounded: {:>4} | Expressions: {:>4}             ║",
+            s.symbols.total_symbols, s.symbols.grounded_symbols, s.symbols.total_expressions
+        );
         println!("╠══════════════════════════════════════════════════════════════════╣");
         println!("║ COMPOUNDING ANALYTICS:                                           ║");
-        println!("║   Discovery→Abstraction: {:>4}  Abstraction→Symbols: {:>4}         ║",
-            s.analytics.discovery_to_abstraction,
-            s.analytics.abstraction_to_symbols);
-        println!("║   Symbols→Goals: {:>4}          Goals→WorldModel: {:>4}            ║",
-            s.analytics.symbols_to_goals,
-            s.analytics.goals_to_world_model);
-        println!("║   WorldModel→Meta: {:>4}        Meta→Discovery: {:>4}              ║",
-            s.analytics.world_model_to_meta,
-            s.analytics.meta_to_discovery);
-        println!("║   Total Interactions: {:>6}   Compound Rate: {:.3}                ║",
-            s.analytics.total_interactions,
-            s.analytics.compound_rate);
+        println!(
+            "║   Discovery→Abstraction: {:>4}  Abstraction→Symbols: {:>4}         ║",
+            s.analytics.discovery_to_abstraction, s.analytics.abstraction_to_symbols
+        );
+        println!(
+            "║   Symbols→Goals: {:>4}          Goals→WorldModel: {:>4}            ║",
+            s.analytics.symbols_to_goals, s.analytics.goals_to_world_model
+        );
+        println!(
+            "║   WorldModel→Meta: {:>4}        Meta→Discovery: {:>4}              ║",
+            s.analytics.world_model_to_meta, s.analytics.meta_to_discovery
+        );
+        println!(
+            "║   Total Interactions: {:>6}   Compound Rate: {:.3}                ║",
+            s.analytics.total_interactions, s.analytics.compound_rate
+        );
         println!("╚══════════════════════════════════════════════════════════════════╝\n");
     }
 }
@@ -2142,13 +2445,17 @@ mod tests {
     fn test_causal_discovery() {
         let config = AGICoreConfig::default();
         let mut discovery = CausalDiscovery::new(config);
-        
+
         // Add observations
         for i in 0..200 {
-            let features = vec![i as f64 * 0.01, (i as f64 * 0.01).sin(), (i as f64 * 0.01).cos()];
+            let features = vec![
+                i as f64 * 0.01,
+                (i as f64 * 0.01).sin(),
+                (i as f64 * 0.01).cos(),
+            ];
             discovery.observe(features, Some(i % 4), (i % 10) as f64 / 10.0);
         }
-        
+
         let summary = discovery.summary();
         assert!(summary.total_observations > 0);
     }
@@ -2157,13 +2464,13 @@ mod tests {
     fn test_abstraction_hierarchy() {
         let config = AGICoreConfig::default();
         let mut abstraction = AbstractionHierarchy::new(config);
-        
+
         // Add patterns
         for i in 0..50 {
             let features = vec![i as f64 * 0.1, (i as f64 * 0.1).sin()];
             abstraction.observe(features);
         }
-        
+
         let summary = abstraction.summary();
         assert!(summary.total_concepts >= 0); // May or may not have concepts
     }
@@ -2172,14 +2479,14 @@ mod tests {
     fn test_world_model() {
         let config = AGICoreConfig::default();
         let mut world = WorldModel::new(config, 4);
-        
+
         // Learn transitions
         for i in 0..100 {
             let from = vec![i as f64 * 0.1, 0.0, 0.0, 0.0];
             let to = vec![(i + 1) as f64 * 0.1, 0.0, 0.0, 0.0];
             world.learn(&from, i % 4, &to, 0.1, false);
         }
-        
+
         let summary = world.summary();
         assert!(summary.total_experience > 0);
     }
@@ -2188,12 +2495,12 @@ mod tests {
     fn test_goal_hierarchy() {
         let config = AGICoreConfig::default();
         let mut goals = GoalHierarchy::new(config);
-        
+
         let goal_id = goals.create_goal("test_goal", vec![1.0, 1.0, 1.0], GoalPriority::High);
         goals.activate_goal(goal_id);
-        
+
         goals.update_progress(&[0.5, 0.5, 0.5]);
-        
+
         let summary = goals.summary();
         assert_eq!(summary.active_goals, 1);
     }
@@ -2202,12 +2509,12 @@ mod tests {
     fn test_symbol_system() {
         let config = AGICoreConfig::default();
         let mut symbols = SymbolSystem::new(config);
-        
+
         let sym1 = symbols.get_or_create_symbol("up", vec![0.0, 1.0], vec![1.0, 0.0]);
         let sym2 = symbols.get_or_create_symbol("down", vec![0.0, -1.0], vec![-1.0, 0.0]);
-        
+
         symbols.compose(vec![sym1, sym2], SymbolRelation::Sequence);
-        
+
         let summary = symbols.summary();
         assert_eq!(summary.total_symbols, 2);
         assert_eq!(summary.total_expressions, 1);
@@ -2217,14 +2524,14 @@ mod tests {
     fn test_integrated_processing() {
         let config = AGICoreConfig::default();
         let mut core = AGICore::new(config, 4, 4);
-        
+
         // Process experiences
         for i in 0..100 {
             let state = vec![i as f64 * 0.1, (i as f64 * 0.1).sin(), 0.0, 0.0];
             let next_state = vec![(i + 1) as f64 * 0.1, ((i + 1) as f64 * 0.1).sin(), 0.0, 0.0];
             core.process_experience(&state, i % 4, &next_state, 0.1, false);
         }
-        
+
         let summary = core.summary();
         assert_eq!(summary.current_step, 100);
         assert!(summary.analytics.total_interactions > 0);

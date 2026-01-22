@@ -1467,8 +1467,9 @@ impl SensorimotorAgent {
                 // Process step through AGI reasoning (use 0.0 as placeholder reward, actual learning happens after)
                 let decision = agi.process_step(state_vec, stream_evidences, 0.0);
 
-                // If AGI has high confidence and suggests different action, modify action target
-                if decision.confidence > 0.85 && decision.action < 5 {
+                // If AGI has moderate+ confidence, modify action target (lowered from 0.85)
+                // This ensures the AGI reasoning system actually influences behavior
+                if decision.confidence > 0.3 && decision.action < 5 {
                     // Map AGI decision to movement direction
                     let (dx, dy) = match decision.action {
                         0 => (0.0, 1.0),  // Up

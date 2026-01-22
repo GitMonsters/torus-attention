@@ -428,6 +428,17 @@ impl CausalGraph {
         self.observe(outcome_values);
     }
 
+    /// Update confidence in a specific mechanism based on prediction accuracy
+    pub fn update_mechanism_confidence(&mut self, from: usize, to: usize, accuracy_factor: f64) {
+        if let Some(mechanism) = self.mechanisms.get_mut(&(from, to)) {
+            // Exponential moving average update of confidence
+            let alpha = 0.1; // Learning rate for confidence updates
+            mechanism.confidence = (1.0 - alpha) * mechanism.confidence + alpha * accuracy_factor;
+            // Clamp to valid range
+            mechanism.confidence = mechanism.confidence.clamp(0.01, 1.0);
+        }
+    }
+
     /// Get summary of causal structure
     pub fn summary(&self) -> CausalGraphSummary {
         let total_confidence: f64 = self.mechanisms.values().map(|m| m.confidence).sum();
@@ -922,13 +933,15 @@ impl StreamVotingSystem {
 
     /// Get voting statistics
     pub fn stats(&self) -> VotingStats {
-        let recent = self.vote_history.iter().rev().take(10);
+        let recent: Vec<_> = self.vote_history.iter().rev().take(10).collect();
+        let count = recent.len().max(1) as f64;
+
         let avg_consensus = recent
-            .clone()
+            .iter()
             .map(|r| r.consensus_count as f64 / r.total_voters.max(1) as f64)
             .sum::<f64>()
-            / 10.0;
-        let avg_confidence = recent.clone().map(|r| r.confidence).sum::<f64>() / 10.0;
+            / count;
+        let avg_confidence = recent.iter().map(|r| r.confidence).sum::<f64>() / count;
 
         VotingStats {
             avg_consensus_fraction: avg_consensus,
@@ -1178,16 +1191,16 @@ impl AGIReasoningSystem {
         // 3. Check for flash inference (quick consensus)
         let flash_action = self.voting_system.flash_inference();
 
-        // 4. If no flash, do deeper consequential thinking
+        // 4. Always aggregate votes to record voting activity
+        let vote_result = self.voting_system.aggregate_votes();
+
+        // 5. Decide: use flash, voting consensus, or tree search
         let (chosen_action, confidence, method) = if let Some(action) = flash_action {
             (action, 0.9, DecisionMethod::FlashConsensus)
         } else {
-            // Build consequence tree
+            // Build consequence tree for deeper reasoning
             let tree = self.consequence_engine.build_tree(state.clone(), 50);
             let tree_action = self.consequence_engine.best_action(&tree);
-
-            // Also aggregate votes
-            let vote_result = self.voting_system.aggregate_votes();
 
             // Combine: prefer voting if consensus, else use tree
             if vote_result.consensus_reached {
@@ -1205,7 +1218,7 @@ impl AGIReasoningSystem {
             } else {
                 (
                     vote_result.winner,
-                    vote_result.confidence * 0.5,
+                    vote_result.confidence.max(0.2), // Ensure minimum confidence
                     DecisionMethod::LowConfidence,
                 )
             }
@@ -1249,16 +1262,31 @@ impl AGIReasoningSystem {
 
     /// Learn from observed outcome
     pub fn learn(&mut self, state: &[f32], action: usize, next_state: &[f32], reward: f64) {
-        // Update causal graph
+        // Update causal graph with observations
         let mut outcomes = HashMap::new();
         if next_state.len() >= 2 {
-            outcomes.insert(0, next_state[0] as f64);
-            outcomes.insert(1, next_state[1] as f64);
+            outcomes.insert(0, next_state[0] as f64); // position_x
+            outcomes.insert(1, next_state[1] as f64); // position_y
         }
-        outcomes.insert(3, reward);
+        outcomes.insert(3, reward); // reward
         self.causal_graph.learn_from_outcome(&outcomes);
 
-        // Update transition model
+        // Perform causal intervention: record the action we took as do(action=X)
+        // This builds the causal model of how actions affect outcomes
+        let predicted = self
+            .causal_graph
+            .intervene(2, action as f64, self.current_step);
+
+        // After observing the actual outcome, update mechanism strengths
+        // This is where the causal model learns from experience
+        if let Some(&predicted_reward) = predicted.get(&3) {
+            let prediction_error = (reward - predicted_reward).abs();
+            // Strengthen/weaken mechanisms based on prediction accuracy
+            self.causal_graph
+                .update_mechanism_confidence(2, 3, 1.0 / (1.0 + prediction_error));
+        }
+
+        // Update transition model for MCTS
         self.consequence_engine
             .update_model(state, action, next_state, reward);
     }

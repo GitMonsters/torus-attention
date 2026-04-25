@@ -11,14 +11,21 @@ Main Components:
 - TorusAttentionConfig: Configuration dataclass
 - apply_torus_attention: Convenience function
 
+Kimi Attention Residuals (paper-faithful, 2025):
+- LayerAttentionResidual: cross-layer Q/K/V attention, zero-init alpha
+- BlockAttentionResiduals: intra-block full attention + O(1) block summary
+- build_kimi_model: convenience stacked-block builder
+
+Parallel Compound Attention (compiled integration):
+- ParallelCompoundAttention: N streams × BlockAttentionResiduals +
+  CrossStreamCohesion + CompoundSummaryAccumulator
+- build_parallel_compound: flat-hyperparameter constructor
+
 Usage:
-    from src import TorusTransformerBlock, AttentionResidualStream, TorusAttentionConfig
+    from src import build_parallel_compound
 
-    config = TorusAttentionConfig(d_model=512, n_heads=8)
-    stream = AttentionResidualStream(config.d_model, n_blocks=12)
-    stream.reset()
-
-    blocks = [TorusTransformerBlock(config, stream, i) for i in range(12)]
+    pca = build_parallel_compound(d_model=512, n_streams=4, n_blocks=3, block_size=4)
+    out, metrics = pca.forward(x)   # x: [B, L, 512]
 """
 
 from .torus_attention_mechanism import (
@@ -34,10 +41,17 @@ from .torus_attention_mechanism import (
     BlockAttentionResiduals,
     build_kimi_model,
 )
+from .kimi_parallel_compound import (
+    CrossStreamCohesion,
+    CompoundSummaryAccumulator,
+    ParallelCompoundAttention,
+    build_parallel_compound,
+)
 from .advanced_torus_topology import AdvancedTorusConfig, TorusCoordinateSystem
 from .tinygrad_compatibility import Sequential, MultiheadAttention
 
 __all__ = [
+    # Core torus attention
     'TorusAttentionConfig',
     'TorusPositionalEncoding',
     'VortexAttentionHead',
@@ -51,6 +65,11 @@ __all__ = [
     'LayerAttentionResidual',
     'BlockAttentionResiduals',
     'build_kimi_model',
+    # Parallel Compound Attention (compiled)
+    'CrossStreamCohesion',
+    'CompoundSummaryAccumulator',
+    'ParallelCompoundAttention',
+    'build_parallel_compound',
 ]
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"

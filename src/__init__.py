@@ -1,52 +1,48 @@
 """
-Enhanced Multi-PINNACLE Core Module
-====================================
+Torus Attention Module
+======================
 
-Core consciousness system and frameworks for the Enhanced Multi-PINNACLE system.
+Attention mechanism on torus topology with vortex dynamics and residual streams.
 
 Main Components:
-- Enhanced Multi-PINNACLE System: Complete integrated consciousness system
-- Consciousness Frameworks: Individual framework implementations
-- Reasoning Engines: Advanced reasoning capabilities
-- Integration Systems: Framework merger and state management
+- TorusMultiHeadAttention: Multi-head attention with torus + vortex dynamics
+- TorusTransformerBlock: Pre-norm block with separate attention/FFN residual scales
+- AttentionResidualStream: Cross-block highway for gradient flow
+- TorusAttentionConfig: Configuration dataclass
+- apply_torus_attention: Convenience function
 
 Usage:
-    from core import EnhancedMultiPinnacleSystem, create_enhanced_system
-    
-    # Create system with default configuration
-    system = create_enhanced_system()
-    
-    # Solve ARC problem
-    results = system.solve_arc_problem(problem_data)
+    from src import TorusTransformerBlock, AttentionResidualStream, TorusAttentionConfig
+
+    config = TorusAttentionConfig(d_model=512, n_heads=8)
+    stream = AttentionResidualStream(config.d_model, n_blocks=12)
+    stream.reset()
+
+    blocks = [TorusTransformerBlock(config, stream, i) for i in range(12)]
 """
 
-from .enhanced_multi_pinnacle import (
-    EnhancedMultiPinnacleSystem,
-    EnhancedMultiPinnacleConfig,
-    SystemPerformanceMetrics,
-    create_enhanced_system
+from .torus_attention_mechanism import (
+    TorusAttentionConfig,
+    TorusPositionalEncoding,
+    VortexAttentionHead,
+    TorusMultiHeadAttention,
+    AttentionResidualStream,
+    TorusTransformerBlock,
+    apply_torus_attention,
 )
-
-# Import consciousness frameworks
-try:
-    from .consciousness_frameworks import (
-        UniversalMindGenerator,
-        ThreePrinciplesFramework,
-        DeschoolingSocietyIntegration,
-        TranscendentStatesProcessor,
-        HRMCyclesManager
-    )
-except ImportError:
-    # Graceful fallback if not all frameworks are available
-    pass
+from .advanced_torus_topology import AdvancedTorusConfig, TorusCoordinateSystem
+from .tinygrad_compatibility import Sequential, MultiheadAttention
 
 __all__ = [
-    'EnhancedMultiPinnacleSystem',
-    'EnhancedMultiPinnacleConfig', 
-    'SystemPerformanceMetrics',
-    'create_enhanced_system',
+    'TorusAttentionConfig',
+    'TorusPositionalEncoding',
+    'VortexAttentionHead',
+    'TorusMultiHeadAttention',
+    'AttentionResidualStream',
+    'TorusTransformerBlock',
+    'apply_torus_attention',
+    'AdvancedTorusConfig',
+    'TorusCoordinateSystem',
 ]
 
-__version__ = "1.0.0"
-__author__ = "Enhanced Multi-PINNACLE Team"
-__email__ = "contact@enhanced-multi-pinnacle.ai"
+__version__ = "1.1.0"

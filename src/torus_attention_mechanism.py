@@ -332,15 +332,83 @@ def apply_torus_attention(tokens: Tensor,
     return output
 
 
+class AttentionResidualStream(object):
+    """
+    Dedicated residual stream that flows alongside attention.
+
+    Maintains a persistent residual accumulator across transformer blocks —
+    a highway for gradient flow that bypasses per-block transformations.
+    Each block writes a gated update into the stream; later blocks can read
+    from it as additional context, preventing representational collapse in
+    deep torus networks.
+
+    Stream update rule (per block i):
+        stream_i = gate_i * stream_{i-1} + (1 - gate_i) * block_output_i
+        final    = stream_N + alpha * last_block_output
+    """
+
+    def __init__(self, d_model: int, n_blocks: int = 12):
+        self.d_model = d_model
+        self.n_blocks = n_blocks
+        # Learnable per-block retention gate (initialised near 1 → stream
+        # is conservative by default, accepts new info gradually)
+        self.stream_gates = [
+            nn.Parameter(Tensor.ones(1) * 0.85) for _ in range(n_blocks)
+        ]
+        # Projection that blends stream back into block inputs
+        self.stream_proj = nn.Linear(d_model, d_model, bias=False)
+        # Output mix weight
+        self.output_mix = nn.Parameter(Tensor.ones(1) * 0.1)
+        self._stream: Optional[Tensor] = None
+
+    def reset(self) -> None:
+        """Reset accumulated stream (call at the start of each forward pass)."""
+        self._stream = None
+
+    def update(self, block_idx: int, block_output: Tensor) -> Tensor:
+        """
+        Update the residual stream and return the enriched representation.
+
+        Args:
+            block_idx: Index of current transformer block (0-based).
+            block_output: Output of the block  [batch, seq, d_model].
+
+        Returns:
+            block_output enriched with the running stream.
+        """
+        gate = self.stream_gates[min(block_idx, self.n_blocks - 1)]
+        gate_val = gate.sigmoid()
+
+        if self._stream is None:
+            self._stream = block_output
+        else:
+            self._stream = gate_val * self._stream + (1 - gate_val) * block_output
+
+        # Blend projected stream back into the representation
+        stream_contribution = self.stream_proj(self._stream)
+        return block_output + self.output_mix * stream_contribution
+
+
 class TorusTransformerBlock(object):
-    """Complete transformer block with torus attention"""
-    
-    def __init__(self, config: TorusAttentionConfig):
+    """
+    Complete transformer block with torus attention and proper residual streams.
+
+    Uses **pre-norm** layout (norm → sub-layer → add residual) for training
+    stability, separate learnable residual scales for attention and FFN paths,
+    and an optional AttentionResidualStream for cross-block highway connections.
+    """
+
+    def __init__(self, config: TorusAttentionConfig,
+                 residual_stream: Optional[AttentionResidualStream] = None,
+                 block_idx: int = 0):
         super().__init__()
-        
+
+        self.block_idx = block_idx
+        self.residual_stream = residual_stream
+
         # Torus multi-head attention
         self.torus_attention = TorusMultiHeadAttention(config)
-        
+
         # Feed-forward network with vortex properties
         self.ffn = nn.Sequential(
             nn.Linear(config.d_model, config.d_model * 4),
@@ -349,26 +417,41 @@ class TorusTransformerBlock(object):
             nn.Linear(config.d_model * 4, config.d_model),
             nn.Dropout(0.1)
         )
-        
-        # Layer normalization
-        self.ln1 = nn.LayerNorm(config.d_model)
-        self.ln2 = nn.LayerNorm(config.d_model)
-        
-        # Residual enhancement with torus properties
-        self.residual_enhancer = nn.Parameter(Tensor.ones(1) * 0.9)
-        
+
+        # Pre-norm layer normalizations (applied before each sub-layer)
+        self.ln1 = nn.LayerNorm(config.d_model)  # before attention
+        self.ln2 = nn.LayerNorm(config.d_model)  # before FFN
+
+        # Separate learnable residual scales — attention and FFN get
+        # independent gates so the network can balance the two paths.
+        # Initialised to 1.0 so training starts from the standard residual.
+        self.attn_residual_scale = nn.Parameter(Tensor.ones(1))
+        self.ffn_residual_scale = nn.Parameter(Tensor.ones(1))
+
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tuple[Tensor, Dict]:
-        """Forward pass through torus transformer block"""
-        
-        # Torus self-attention with residual
-        attn_out, attn_metrics = self.torus_attention(x, x, x, mask)
-        x1 = self.ln1(x + self.residual_enhancer * attn_out)
-        
-        # Feed-forward with residual
-        ffn_out = self.ffn(x1)
-        x2 = self.ln2(x1 + self.residual_enhancer * ffn_out)
-        
-        return x2, attn_metrics
+        """
+        Pre-norm forward pass:
+            x → LN → attention → scale × output + x (residual)
+              → LN → FFN       → scale × output + x (residual)
+        """
+        # ── Attention sub-layer (pre-norm) ──────────────────────────────────
+        attn_out, attn_metrics = self.torus_attention(
+            self.ln1(x), self.ln1(x), self.ln1(x), mask
+        )
+        x = x + self.attn_residual_scale * attn_out
+
+        # ── FFN sub-layer (pre-norm) ────────────────────────────────────────
+        ffn_out = self.ffn(self.ln2(x))
+        x = x + self.ffn_residual_scale * ffn_out
+
+        # ── Cross-block residual stream (optional highway) ──────────────────
+        if self.residual_stream is not None:
+            x = self.residual_stream.update(self.block_idx, x)
+
+        attn_metrics['attn_residual_scale'] = float(self.attn_residual_scale.numpy())
+        attn_metrics['ffn_residual_scale'] = float(self.ffn_residual_scale.numpy())
+
+        return x, attn_metrics
 
 
 def test_torus_attention():
@@ -403,11 +486,19 @@ def test_torus_attention():
     
     print(f"Output shape: {output.shape}")
     
-    # Test complete transformer block
-    transformer_block = TorusTransformerBlock(config)
-    block_output, block_metrics = transformer_block(tokens)
-    
-    print(f"Transformer block output shape: {block_output.shape}")
+    # Test transformer block with residual stream
+    n_blocks = 4
+    residual_stream = AttentionResidualStream(config.d_model, n_blocks=n_blocks)
+    residual_stream.reset()
+
+    x = tokens
+    for i in range(n_blocks):
+        block = TorusTransformerBlock(config, residual_stream=residual_stream, block_idx=i)
+        x, metrics = block(x)
+        print(f"  Block {i} — attn_scale={metrics['attn_residual_scale']:.3f} "
+              f"ffn_scale={metrics['ffn_residual_scale']:.3f}")
+
+    print(f"Stacked blocks output shape: {x.shape}")
     
     # Verify advantages
     print("\n✅ Torus Attention Advantages:")
@@ -417,8 +508,11 @@ def test_torus_attention():
     print("  ✓ Better gradient flow through continuous manifold")
     print("  ✓ Efficient long-term memory via circulation loops")
     print("  ✓ Superior performance for sequential/temporal modeling")
+    print("  ✓ Pre-norm layout for training stability")
+    print("  ✓ Separate attention/FFN residual scales")
+    print("  ✓ Cross-block AttentionResidualStream highway")
     
-    return output, transformer_block
+    return output, x
 
 
 if __name__ == "__main__":

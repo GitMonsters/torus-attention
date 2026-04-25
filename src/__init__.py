@@ -11,21 +11,27 @@ Main Components:
 - TorusAttentionConfig: Configuration dataclass
 - apply_torus_attention: Convenience function
 
-Kimi Attention Residuals (paper-faithful, 2025):
-- LayerAttentionResidual: cross-layer Q/K/V attention, zero-init alpha
-- BlockAttentionResiduals: intra-block full attention + O(1) block summary
-- build_kimi_model: convenience stacked-block builder
+Block AttnRes (Moonshot AI, arXiv:2603.15031) — paper-faithful:
+- AttnResLayer:           single pseudo-query softmax over block summaries
+- BlockAttentionResiduals: full stack of BlockAttnResLayer transformer layers
+- build_kimi_model:       convenience builder
 
-Parallel Compound Attention (compiled integration):
-- ParallelCompoundAttention: N streams × BlockAttentionResiduals +
-  CrossStreamCohesion + CompoundSummaryAccumulator
+Parallel Streams:
+- StreamBlockAttnRes:      apply inter-stream Block AttnRes over N streams
+- ParallelCompoundAttention: intra + inter stream Block AttnRes
 - build_parallel_compound: flat-hyperparameter constructor
 
-Usage:
-    from src import build_parallel_compound
+Usage::
 
-    pca = build_parallel_compound(d_model=512, n_streams=4, n_blocks=3, block_size=4)
-    out, metrics = pca.forward(x)   # x: [B, L, 512]
+    from src import build_parallel_compound, build_kimi_model
+
+    # Single-stream Block AttnRes:
+    model = build_kimi_model(config, n_layers=24, block_size=8)
+    out, metrics = model.forward(x)
+
+    # Multi-stream:
+    pca = build_parallel_compound(d_model=512, n_streams=4)
+    out, metrics = pca.forward(x)
 """
 
 from .torus_attention_mechanism import (
@@ -36,14 +42,17 @@ from .torus_attention_mechanism import (
     AttentionResidualStream,
     TorusTransformerBlock,
     apply_torus_attention,
-    # Kimi Attention Residuals (paper-faithful implementation)
-    LayerAttentionResidual,
+    # Block AttnRes (Moonshot AI, arXiv:2603.15031)
+    _attn_res_block,
+    AttnResLayer,
+    BlockAttnResLayer,
     BlockAttentionResiduals,
     build_kimi_model,
+    # Legacy alias
+    LayerAttentionResidual,
 )
 from .kimi_parallel_compound import (
-    CrossStreamCohesion,
-    CompoundSummaryAccumulator,
+    StreamBlockAttnRes,
     ParallelCompoundAttention,
     build_parallel_compound,
 )
@@ -61,15 +70,17 @@ __all__ = [
     'apply_torus_attention',
     'AdvancedTorusConfig',
     'TorusCoordinateSystem',
-    # Kimi Attention Residuals
-    'LayerAttentionResidual',
+    # Block AttnRes — paper-faithful (Moonshot AI, arXiv:2603.15031)
+    '_attn_res_block',
+    'AttnResLayer',
+    'BlockAttnResLayer',
     'BlockAttentionResiduals',
     'build_kimi_model',
-    # Parallel Compound Attention (compiled)
-    'CrossStreamCohesion',
-    'CompoundSummaryAccumulator',
+    'LayerAttentionResidual',   # legacy alias for AttnResLayer
+    # Parallel Streams
+    'StreamBlockAttnRes',
     'ParallelCompoundAttention',
     'build_parallel_compound',
 ]
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"

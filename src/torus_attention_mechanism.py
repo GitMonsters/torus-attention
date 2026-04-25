@@ -516,219 +516,253 @@ def test_torus_attention():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# KIMI ATTENTION RESIDUALS  (faithful implementation of arXiv:2505.xxxxx)
+# KIMI ATTENTION RESIDUALS  (Moonshot AI, arXiv:2603.15031)
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Core insight (Kimi team, 2025):
-#   Standard residual connections sum every layer's output into one growing pile.
-#   Signal magnitude grows with depth → early information gets buried (AI amnesia).
+# Official repo: https://github.com/MoonshotAI/Attention-Residuals
 #
-# Solution — Attention Residuals:
-#   Each layer attends over ALL previous layer hidden states to select what it
-#   needs.  No fixed accumulation; dynamic retrieval.  Signal stays bounded.
+# Core insight:
+#   Standard residual connections accumulate all layer outputs with fixed unit
+#   weights.  As depth grows, this dilutes each layer's contribution and causes
+#   hidden-state magnitudes to grow unboundedly (PreNorm dilution problem).
 #
-# Block Attention Residuals (distributed-friendly variant):
-#   Within a block of K layers → full cross-layer attention.
-#   Between blocks             → single compressed summary (standard residual).
-#   This keeps inter-server communication O(1) per block boundary.
+# Solution — Block AttnRes:
+#   Layers are grouped into N blocks.  Within each block, outputs accumulate via
+#   standard residuals (partial_block).  At the start of each sub-layer, a
+#   learned pseudo-query w ∈ R^d performs SOFTMAX attention over all completed
+#   block summaries + the current partial block to produce h:
 #
-# Results from paper:
-#   • 1.25× compute reduction for same performance
-#   • +7.5 pts GPQA Diamond (graduate-level science)
-#   • Bounded signal magnitude (vs exponential growth)
-#   • Even gradient distribution across all layers
-#   • Depth becomes advantage, not liability
+#       V = stack(blocks + [partial_block])          # [N+1, B, T, D]
+#       K = RMSNorm(V)
+#       logits = einsum('d, n b t d -> n b t', w, K) # per-position
+#       h = einsum('n b t, n b t d -> b t d', softmax(logits), V)
+#
+#   h is then used as input to the attention or MLP sublayer.
+#   Applied TWICE per transformer layer: before attention AND before MLP.
+#
+# Key differences from naive multi-head attention variants:
+#   • Single pseudo-query per layer (not Q/K/V projections)
+#   • Softmax over N+1 block dimension (not token-sequence dimension)
+#   • O(N) blocks, not O(L²) per-token attention over full history
+#
+# Results (Kimi Linear 48B MoE):
+#   • 1.25× compute reduction for same loss
+#   • +7.5 pts GPQA-Diamond, +3.1 HumanEval
+#   • Bounded signal magnitude, even gradient distribution
 # ───────────────────────────────────────────────────────────────────────────────
 
 
-class LayerAttentionResidual(object):
+def _attn_res_block(
+    blocks: List[Tensor],
+    partial: Tensor,
+    proj: nn.Linear,
+    norm,
+) -> Tensor:
     """
-    Cross-layer attention residual for a single layer.
+    Paper-faithful Block AttnRes function (Moonshot AI, §3.2).
 
-    Given the current layer's output `h_i` and a stack of all previous
-    layer outputs `[h_0, ..., h_{i-1}]`, computes:
+    Computes softmax attention over completed block summaries + current partial
+    sum, using a single learned pseudo-query (proj.weight row).
 
-        context_i = softmax(Q(h_i) · K(history)ᵀ / √d) · V(history)
-        output_i  = h_i + alpha * context_i
+    Args:
+        blocks:  List of N completed block summaries [B, T, D].
+        partial: Current intra-block partial sum       [B, T, D].
+        proj:    nn.Linear(D, D) — pseudo-query is proj.weight (D,).
+        norm:    RMSNorm or LayerNorm over the value stack.
 
-    where alpha is a learnable scalar (initialised small so training starts
-    close to the vanilla residual baseline).
+    Returns:
+        h: Attention-weighted combination [B, T, D].
+    """
+    all_reps = blocks + [partial]                         # N+1 items
+    V = Tensor.stack(all_reps, dim=0)                     # [N+1, B, T, D]
+    K = norm(V)                                           # normalise values before key projection
+    q = proj.weight.reshape(-1)                           # [D]  — pseudo-query
+    # logits: dot product of q with each (block, batch, token) key
+    logits = (K * q).sum(axis=-1)                         # [N+1, B, T]
+    weights = logits.softmax(axis=0)                      # softmax over block dim
+    h = (weights.unsqueeze(-1) * V).sum(axis=0)           # [B, T, D]
+    return h
 
-    This is the core primitive of the Kimi Attention Residuals paper.
+
+class AttnResLayer(object):
+    """
+    Paper-faithful Block AttnRes layer module.
+
+    Wraps two projection+norm pairs (one for before-attention, one for
+    before-MLP) to be used inside a transformer layer's forward pass.
+
+    Usage (per transformer layer)::
+
+        # Before attention sub-layer:
+        h = self.attn_res.before_attn(completed_blocks, partial_block)
+        attn_out = self.attn(self.attn_norm(h))
+        partial_block = (partial_block or 0) + attn_out
+
+        # Before MLP sub-layer:
+        h = self.attn_res.before_mlp(completed_blocks, partial_block)
+        mlp_out = self.mlp(self.mlp_norm(h))
+        partial_block = partial_block + mlp_out
     """
 
-    def __init__(self, d_model: int, n_heads: int = 8):
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_head = d_model // n_heads
-        assert d_model % n_heads == 0
+    def __init__(self, d_model: int):
+        self.attn_proj = nn.Linear(d_model, d_model, bias=False)
+        self.attn_norm = nn.LayerNorm(d_model)
+        self.mlp_proj = nn.Linear(d_model, d_model, bias=False)
+        self.mlp_norm = nn.LayerNorm(d_model)
 
-        # Current layer queries previous layer keys/values
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+    def before_attn(self, blocks: List[Tensor], partial: Tensor) -> Tensor:
+        return _attn_res_block(blocks, partial, self.attn_proj, self.attn_norm)
 
-        # Small init → residual acts like identity at start of training
-        self.alpha = nn.Parameter(Tensor.zeros(1))
+    def before_mlp(self, blocks: List[Tensor], partial: Tensor) -> Tensor:
+        return _attn_res_block(blocks, partial, self.mlp_proj, self.mlp_norm)
 
-        self._scale = math.sqrt(self.d_head)
 
-    def _split_heads(self, x: Tensor) -> Tensor:
-        """[B, L, D] → [B, H, L, d_head]"""
-        b, l, _ = x.shape
-        return x.reshape(b, l, self.n_heads, self.d_head).transpose(1, 2)
+class BlockAttnResLayer(object):
+    """
+    A transformer layer with Block AttnRes replacing standard residuals.
 
-    def _merge_heads(self, x: Tensor) -> Tensor:
-        """[B, H, L, d_head] → [B, L, D]"""
-        b, _, l, _ = x.shape
-        return x.transpose(1, 2).reshape(b, l, self.d_model)
+    Follows the paper pseudocode exactly:
+        1.  h = block_attn_res(blocks, partial, attn_proj, attn_norm)
+        2.  If block boundary → push partial to blocks, reset partial
+        3.  attn_out = Attention(attn_pre_norm(h))
+        4.  partial  = (partial or 0) + attn_out
+        5.  h        = block_attn_res(blocks, partial, mlp_proj, mlp_norm)
+        6.  mlp_out  = MLP(mlp_pre_norm(h))
+        7.  partial  = partial + mlp_out
 
-    def forward(self, h_current: Tensor,
-                history: List[Tensor]) -> Tensor:
+    block_size counts both attn and MLP sub-layers, so each transformer
+    layer = 2 sub-layers → boundary triggers when layer_idx % (block_size // 2) == 0.
+    """
+
+    def __init__(self, config: 'TorusAttentionConfig', layer_idx: int, block_size: int):
+        self.layer_idx = layer_idx
+        self.block_size = block_size
+
+        # AttnRes modules
+        self.attn_res = AttnResLayer(config.d_model)
+
+        # Core sublayers (reuse existing torus transformer components)
+        inner = TorusTransformerBlock(config, residual_stream=None, block_idx=layer_idx)
+        self._inner = inner  # used only for attn + ffn params; residual replaced by AttnRes
+
+        # Pre-norm for attention input and MLP input
+        self.attn_pre_norm = nn.LayerNorm(config.d_model)
+        self.mlp_pre_norm = nn.LayerNorm(config.d_model)
+
+    def forward(
+        self,
+        blocks: List[Tensor],
+        partial: Tensor,
+    ) -> Tuple[List[Tensor], Tensor]:
         """
         Args:
-            h_current: Output of the current sub-layer  [B, L, D].
-            history:   List of previous layer outputs   each [B, L, D].
-                       If empty, returns h_current unchanged.
+            blocks:  List of completed block summaries from previous blocks.
+            partial: Current intra-block partial sum (standard residual accumulator).
 
         Returns:
-            h_current enriched with selected context from history  [B, L, D].
+            blocks:  Updated list (may have grown at block boundary).
+            partial: Updated partial sum after this layer.
         """
-        if not history:
-            return h_current
+        # Step 1: Block AttnRes before attention
+        h = self.attn_res.before_attn(blocks, partial)
 
-        # Stack history → [B, n_prev * L, D]  (treat all prev tokens as keys)
-        history_cat = Tensor.cat(history, dim=1)
+        # Step 2: Block boundary check (sub-layer index = layer_idx * 2 for attn)
+        if self.layer_idx > 0 and self.layer_idx % (self.block_size // 2) == 0:
+            blocks = blocks + [partial]
+            partial = None
 
-        q = self._split_heads(self.q_proj(h_current))    # [B, H, L, d]
-        k = self._split_heads(self.k_proj(history_cat))  # [B, H, nL, d]
-        v = self._split_heads(self.v_proj(history_cat))  # [B, H, nL, d]
+        # Step 3-4: Attention sublayer (use inner block, but only attn path)
+        h_normed = self.attn_pre_norm(h)
+        attn_out, _ = self._inner.attn(h_normed)
+        partial = (partial + attn_out) if partial is not None else attn_out
 
-        # Scaled dot-product attention
-        scores = q.matmul(k.transpose(-2, -1)) / self._scale  # [B, H, L, nL]
-        weights = scores.softmax(axis=-1)
-        context = weights.matmul(v)                            # [B, H, L, d]
+        # Step 5: Block AttnRes before MLP
+        h = self.attn_res.before_mlp(blocks, partial)
 
-        context = self._merge_heads(context)
-        context = self.out_proj(context)
+        # Step 6-7: MLP sublayer
+        h_normed = self.mlp_pre_norm(h)
+        mlp_out = self._inner.ffn(h_normed)
+        partial = partial + mlp_out
 
-        # Residual blend — alpha grows from 0 during training
-        return h_current + self.alpha.sigmoid() * context
+        return blocks, partial
 
 
 class BlockAttentionResiduals(object):
     """
-    Block Attention Residuals — the distributed-friendly variant from the paper.
+    Paper-faithful Block AttnRes stack: N_layers using BlockAttnResLayer.
 
-    Wraps `block_size` TorusTransformerBlocks.  Inside the block every layer
-    can attend over all previous layer outputs (full cross-layer attention via
-    `LayerAttentionResidual`).  At the block boundary a single compressed
-    summary is produced for the next block via a learned linear projection.
-
-    This keeps inter-block (inter-server) communication O(1) instead of O(n²).
+    Maintains the `blocks` list (completed block summaries) and `partial`
+    (intra-block accumulator) across all layers.
 
     Usage::
 
-        config = TorusAttentionConfig(d_model=512, n_heads=8)
-        block = BlockAttentionResiduals(config, block_size=4)
-        out, summary, metrics = block(x)
+        config = TorusAttentionConfig(d_model=512)
+        bar = BlockAttentionResiduals(config, n_layers=12, block_size=8)
 
-        # Stack blocks:
-        x = summary  # previous block summary flows into next block's input
-        out2, summary2, metrics2 = block2(x)
+        x = embed(tokens)          # [B, L, D]
+        out = bar(x)               # [B, L, D]
     """
 
-    def __init__(self, config: TorusAttentionConfig, block_size: int = 4):
+    def __init__(
+        self,
+        config: 'TorusAttentionConfig',
+        n_layers: int = 12,
+        block_size: int = 8,
+    ):
         self.config = config
+        self.n_layers = n_layers
         self.block_size = block_size
-        d_model = config.d_model
-
-        # One TorusTransformerBlock per layer in this block
-        # (no AttentionResidualStream — replaced by LayerAttentionResidual)
         self.layers = [
-            TorusTransformerBlock(config, residual_stream=None, block_idx=i)
-            for i in range(block_size)
+            BlockAttnResLayer(config, i, block_size) for i in range(n_layers)
         ]
 
-        # Per-layer cross-layer attention residual
-        self.layer_attn_residuals = [
-            LayerAttentionResidual(d_model, n_heads=config.n_heads)
-            for _ in range(block_size)
-        ]
-
-        # Block boundary: compress all layer outputs into one summary
-        # (sent to the next block — equivalent to standard residual between blocks)
-        self.block_summary_proj = nn.Linear(d_model * block_size, d_model)
-        self.block_summary_norm = nn.LayerNorm(d_model)
-
-    def forward(self, x: Tensor,
-                mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor, Dict]:
+    def forward(self, x: Tensor) -> Tuple[Tensor, Dict]:
         """
         Args:
-            x:    Input to this block  [B, L, D].
-            mask: Optional attention mask.
+            x: Input [B, L, D].
 
         Returns:
-            last_hidden:  Output of the final layer in this block [B, L, D].
-            block_summary: Compressed summary for the next block  [B, L, D].
-            metrics:       Dict of diagnostic values.
+            output:  Final hidden state [B, L, D].
+            metrics: Diagnostic dict.
         """
-        history: List[Tensor] = []
-        layer_outputs: List[Tensor] = []
-        all_metrics: Dict = {}
-        h = x
+        # Seed blocks with the token embedding (always in blocks[0], per paper)
+        blocks: List[Tensor] = [x]
+        partial: Tensor = x
 
-        for i, (layer, lar) in enumerate(
-            zip(self.layers, self.layer_attn_residuals)
-        ):
-            # Standard torus transformer computation
-            h, m = layer(h, mask)
+        for layer in self.layers:
+            blocks, partial = layer.forward(blocks, partial)
 
-            # Cross-layer attention residual: look back at everything so far
-            h = lar.forward(h, history)
-
-            history.append(h)
-            layer_outputs.append(h)
-            all_metrics[f'layer_{i}'] = m
-
-        # Block boundary: concatenate all layer outputs and project to D
-        # [B, L, block_size * D] → [B, L, D]
-        stacked = Tensor.cat(layer_outputs, dim=-1)
-        block_summary = self.block_summary_norm(
-            self.block_summary_proj(stacked)
-        )
-
-        all_metrics['block_alpha_mean'] = float(
-            Tensor.stack(
-                [lar.alpha.sigmoid() for lar in self.layer_attn_residuals]
-            ).mean().numpy()
-        )
-
-        return history[-1], block_summary, all_metrics
+        return partial, {
+            'n_blocks_completed': len(blocks),
+            'n_layers': self.n_layers,
+            'block_size': self.block_size,
+        }
 
 
-def build_kimi_model(config: TorusAttentionConfig,
-                     n_blocks: int = 3,
-                     block_size: int = 4) -> List:
+# Legacy alias kept for backward compatibility
+LayerAttentionResidual = AttnResLayer
+
+
+def build_kimi_model(
+    config: 'TorusAttentionConfig',
+    n_layers: int = 12,
+    block_size: int = 8,
+) -> 'BlockAttentionResiduals':
     """
-    Convenience builder: returns a list of BlockAttentionResiduals.
+    Convenience builder for a Block AttnRes model stack.
 
-    Each block contains `block_size` torus layers with full cross-layer
-    attention inside.  Between blocks the summary (standard residual) flows.
+    Args:
+        config:     TorusAttentionConfig.
+        n_layers:   Total transformer layers.
+        block_size: Number of sub-layers (attn+MLP) per block.
+                    With block_size=8 → 4 transformer layers per block.
 
     Example::
 
-        blocks = build_kimi_model(config, n_blocks=3, block_size=4)
-        # 3 blocks × 4 layers = 12 effective layers
-
-        x = embed(tokens)          # [B, L, D]
-        for block in blocks:
-            x, summary, _ = block(x)
-            x = x + summary        # inter-block standard residual
+        model = build_kimi_model(config, n_layers=24, block_size=8)
+        out, metrics = model.forward(embed(tokens))
     """
-    return [BlockAttentionResiduals(config, block_size=block_size)
-            for _ in range(n_blocks)]
+    return BlockAttentionResiduals(config, n_layers=n_layers, block_size=block_size)
 
 
 if __name__ == "__main__":

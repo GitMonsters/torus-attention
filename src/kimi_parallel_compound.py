@@ -1,339 +1,209 @@
 #!/usr/bin/env python3
 """
-Parallel Compound Attention
-===========================
+Kimi Block AttnRes — Applied to Parallel Cognitive Streams
+===========================================================
 
-Compiles LayerAttentionResidual, BlockAttentionResiduals, and build_kimi_model
-into a single unified module that operates under three principles:
+Paper: Attention Residuals (Moonshot AI, arXiv:2603.15031)
+Repo:  https://github.com/MoonshotAI/Attention-Residuals
 
-    PRINCIPLE 1 — Think in parallel
-        N independent BlockAttentionResiduals streams decompose complexity
-        simultaneously.  Each stream processes the same input through its own
-        chain of cross-layer-attention blocks.  No stream sees another's
-        internals during its own computation (true parallelism).
+Core mechanism (Block AttnRes, paper §3.2):
 
-    PRINCIPLE 2 — Integrate with cohesion
-        After each block level, stream outputs are unified via a cross-stream
-        LayerAttentionResidual.  Each stream attends over ALL other streams'
-        block summaries, then updates its own representation.  This is the
-        binding step — streams learn what to borrow from each other.
+    V = stack(blocks + [partial])          # [N+1, B, T, D]
+    K = norm(V)
+    logits = einsum('d, nbTd -> nbT', w, K)  # w = learned pseudo-query
+    h = einsum('nbT, nbTd -> bTd', softmax(logits, dim=0), V)
 
-    PRINCIPLE 3 — Compound insight
-        Block summaries from level k become additional context (history) for
-        level k+1 across ALL streams.  Insight is not discarded at block
-        boundaries; it is carried forward and available to every subsequent
-        block.  The compounding is multiplicative: stream × block summaries
-        attend together.
+Applied TWICE per transformer layer: before attention and before MLP.
 
-Architecture diagram::
+Parallel streams variant:
+    - Each cognitive stream is treated as one "completed block"
+    - Stream i attends over all completed streams 0..i-1 + its own partial
+    - Equivalent to N rounds of inter-block attention, one per stream
+    - Output: N updated stream tensors with selective cross-stream information
 
-    Input [B, L, D]
-        │
-        ├─ Stream 0 ─ Block_0_0 ─┬─ Block_1_0 ─┬─ Block_2_0 ─┐
-        ├─ Stream 1 ─ Block_0_1 ─┤ cross-stream ├─ Block_2_1 ─┤ cross-stream → output
-        ├─ Stream 2 ─ Block_0_2 ─┤ integration  ├─ Block_2_2 ─┤
-        └─ Stream N ─ Block_0_N ─┘              └─ Block_2_N ─┘
-                           ↑                          ↑
-                       summaries                  summaries compound
-                       broadcast                  from level 0+1
-                       to level 1
+Architecture::
 
-Complexity:
-    Time:  O(n_streams * n_blocks * block_size * L²)
-    Memory: O(n_streams * n_blocks * block_size * L * D)
-    Inter-block comms: O(1) per block boundary (inherited from BlockAttentionResiduals)
+    Input: N streams, each [B, L, D]
+                      │
+    Stream 0  ────────┤  (first stream has no history → h = stream_0)
+    Stream 1  ─ block_attn_res([stream_0],          stream_1)
+    Stream 2  ─ block_attn_res([stream_0, stream_1], stream_2)
+    ...
+    Stream N  ─ block_attn_res([s0..s_{N-1}],       stream_N)
+                      │
+    Output: N updated streams [B, L, D]
 
-Reported results on base LLMs (Kimi paper, 2025):
-    • 1.25× compute reduction for same performance
-    • +7.5 pts GPQA Diamond
-    • Bounded signal magnitude, even gradient distribution
+Complexity: O(N × L) — single dot product per stream (no L² attention).
 """
 
 from __future__ import annotations
 
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from tinygrad.tensor import Tensor
 from tinygrad import nn
 
 from .torus_attention_mechanism import (
     TorusAttentionConfig,
-    LayerAttentionResidual,
+    _attn_res_block,
+    AttnResLayer,
     BlockAttentionResiduals,
+    build_kimi_model,
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Cross-Stream Cohesion Layer
-# ─────────────────────────────────────────────────────────────────────────────
-
-class CrossStreamCohesion(object):
+class StreamBlockAttnRes(object):
     """
-    Binds N parallel streams into a coherent shared representation.
+    Apply Block AttnRes over N parallel cognitive streams.
 
-    Each stream queries all other streams' block summaries via
-    LayerAttentionResidual, updating its own hidden state.  This is the
-    "integrate with cohesion" step — streams share relevant insight without
-    collapsing into a single stream.
+    Treats each completed stream output as a block summary.  Stream i
+    attends over streams 0..i-1 (completed blocks) + its own value (partial)
+    using a single learned pseudo-query per stream.
 
-    Runs once per block level (after all streams finish their block).
+    One AttnResLayer per stream (two proj/norm pairs: before-attn + before-mlp).
+    The 'before-attn' path is used to update stream input; the 'before-mlp'
+    path is exposed for callers who want to apply it at a second point.
     """
 
-    def __init__(self, d_model: int, n_streams: int, n_heads: int = 8):
+    def __init__(self, d_model: int, n_streams: int):
         self.n_streams = n_streams
-        # Each stream has its own cross-stream attention module
-        self.cross_attn = [
-            LayerAttentionResidual(d_model, n_heads=n_heads)
-            for _ in range(n_streams)
-        ]
-        # Post-cohesion gate: controls how much cross-stream info to absorb
-        self.cohesion_gate = nn.Linear(d_model, d_model, bias=False)
-        self.cohesion_norm = nn.LayerNorm(d_model)
-        self.cohesion_scale = nn.Parameter(Tensor.ones(1) * 0.5)
+        # One AttnResLayer per stream
+        self.layers = [AttnResLayer(d_model) for _ in range(n_streams)]
 
-    def forward(
-        self,
-        stream_hiddens: List[Tensor],
-        stream_summaries: List[Tensor],
-    ) -> List[Tensor]:
+    def forward(self, streams: List[Tensor]) -> Tuple[List[Tensor], Dict]:
         """
         Args:
-            stream_hiddens:   List[Tensor[B, L, D]] — current hidden state per stream.
-            stream_summaries: List[Tensor[B, L, D]] — block summary per stream.
+            streams: List[Tensor[B, T, D]], one per cognitive stream.
 
         Returns:
-            List[Tensor[B, L, D]] — updated hidden states after cross-stream binding.
+            updated:  List[Tensor[B, T, D]] — each stream after block AttnRes.
+            metrics:  Dict with n_streams.
         """
-        updated = []
-        for i, h in enumerate(stream_hiddens):
-            # Other streams' summaries as history for this stream
-            other_summaries = [s for j, s in enumerate(stream_summaries) if j != i]
-            if not other_summaries:
-                updated.append(h)
-                continue
-            # Cross-stream attention: this stream attends over all others
-            h_cross = self.cross_attn[i].forward(h, other_summaries)
-            # Cohesion gate: learned blend
-            gate = self.cohesion_gate(h_cross).sigmoid()
-            h_bound = self.cohesion_norm(h + self.cohesion_scale * gate * h_cross)
-            updated.append(h_bound)
-        return updated
+        completed: List[Tensor] = []
+        updated: List[Tensor] = []
 
+        for i, s in enumerate(streams):
+            if completed:
+                h = self.layers[i].before_attn(completed, s)
+            else:
+                h = s  # first stream — no history
+            updated.append(h)
+            completed.append(h)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Compound Summary Accumulator
-# ─────────────────────────────────────────────────────────────────────────────
+        return updated, {'n_streams': self.n_streams, 'method': 'block_attn_res'}
 
-class CompoundSummaryAccumulator(object):
-    """
-    Compounds block summaries across levels and streams.
-
-    At each block level, the summaries from ALL previous levels × ALL streams
-    are available as additional context.  A learned attention mechanism selects
-    what to carry forward, preventing unbounded accumulation while preserving
-    useful long-range insight.
-
-    This embodies "compound insight at every step."
-    """
-
-    def __init__(self, d_model: int, n_heads: int = 8):
-        self.attn = LayerAttentionResidual(d_model, n_heads=n_heads)
-        self.compress = nn.Linear(d_model, d_model, bias=False)
-        self.norm = nn.LayerNorm(d_model)
-
-    def forward(
-        self,
-        current_summary: Tensor,
-        history: List[Tensor],
-    ) -> Tensor:
-        """
-        Args:
-            current_summary: Summary from the just-completed block level [B, L, D].
-            history:         All previous summaries (any level/stream) [B, L, D] each.
-
-        Returns:
-            Enriched summary [B, L, D] that compounds all prior insight.
-        """
-        if not history:
-            return current_summary
-        enriched = self.attn.forward(current_summary, history)
-        return self.norm(self.compress(enriched) + current_summary)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Parallel Compound Attention  (the compiled module)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ParallelCompoundAttention(object):
     """
-    Compiled Kimi Attention Residuals with parallel streams and compound binding.
+    Block AttnRes applied to N parallel cognitive streams (TinyGrad).
 
-    Brings together:
-        LayerAttentionResidual  → within each block (cross-layer)
-        BlockAttentionResiduals → within each stream (block boundary compression)
-        CrossStreamCohesion     → between streams (cohesion after each block level)
-        CompoundSummaryAccumulator → across block levels (compounding insight)
+    Applies the Moonshot AI Block AttnRes mechanism across N streams,
+    treating each stream as a completed block in the inter-block attention.
+
+    Also exposes a full BlockAttentionResiduals stack for single-stream use.
 
     Parameters
     ----------
-    config      : TorusAttentionConfig  — shared attention config for all blocks.
-    n_streams   : int  — number of parallel processing streams.
-    n_blocks    : int  — number of block levels per stream.
-    block_size  : int  — layers per block (cross-layer attention within block).
+    config    : TorusAttentionConfig
+    n_streams : Number of parallel streams.
+    n_layers  : Transformer layers per stream (for intra-stream BlockAttentionResiduals).
+    block_size: Sub-layers per block (attn+MLP counts as 2).
 
     Usage
     -----
     ::
 
-        config = TorusAttentionConfig(d_model=512, n_heads=8)
-        pca = ParallelCompoundAttention(config, n_streams=4, n_blocks=3, block_size=4)
+        config = TorusAttentionConfig(d_model=512)
+        pca = ParallelCompoundAttention(config, n_streams=4)
 
-        x = embed(tokens)            # [B, L, D]
-        out, metrics = pca.forward(x)
-        # out: [B, L, D]  unified representation
+        streams = [x] * 4   # or different projections of x
+        updated, metrics = pca.forward(streams)
     """
 
     def __init__(
         self,
         config: TorusAttentionConfig,
         n_streams: int = 4,
-        n_blocks: int = 3,
-        block_size: int = 4,
+        n_layers: int = 12,
+        block_size: int = 8,
     ):
         self.config = config
         self.n_streams = n_streams
-        self.n_blocks = n_blocks
-        self.block_size = block_size
         d_model = config.d_model
-        n_heads = config.n_heads
 
-        # PRINCIPLE 1: n_streams × n_blocks independent BlockAttentionResiduals
-        # streams[stream_idx][block_idx]
-        self.streams: List[List[BlockAttentionResiduals]] = [
-            [BlockAttentionResiduals(config, block_size=block_size)
-             for _ in range(n_blocks)]
+        # Intra-stream Block AttnRes stacks (one full stack per stream)
+        self.intra_stream = [
+            BlockAttentionResiduals(config, n_layers=n_layers, block_size=block_size)
             for _ in range(n_streams)
         ]
 
-        # PRINCIPLE 2: cross-stream cohesion after each block level
-        self.cohesion_layers = [
-            CrossStreamCohesion(d_model, n_streams, n_heads=n_heads)
-            for _ in range(n_blocks)
-        ]
+        # Inter-stream Block AttnRes (cross-stream fusion)
+        self.inter_stream = StreamBlockAttnRes(d_model, n_streams)
 
-        # PRINCIPLE 3: compound summary accumulator (shared across all streams/levels)
-        self.accumulator = CompoundSummaryAccumulator(d_model, n_heads=n_heads)
-
-        # Stream input projections (diversify streams from same input)
-        self.stream_in_proj = [
+        # Stream input projections (diversify)
+        self.stream_in = [
             nn.Linear(d_model, d_model, bias=False) for _ in range(n_streams)
         ]
         self.stream_in_norms = [nn.LayerNorm(d_model) for _ in range(n_streams)]
 
-        # Output: merge all stream final outputs
+        # Output merge
         self.output_proj = nn.Linear(d_model * n_streams, d_model)
         self.output_norm = nn.LayerNorm(d_model)
 
     def forward(
         self,
         x: Tensor,
-        mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Dict]:
         """
-        Full parallel compound forward pass.
-
-        Step-by-step:
-            For each block level b in 0..n_blocks:
-                For each stream s in 0..n_streams (parallel):
-                    h_s, summary_s = streams[s][b](h_s)           # block forward
-                    summary_s = accumulator(summary_s, history)   # compound
-                Cross-stream cohesion: each stream attends others  # integrate
-
         Args:
-            x    : Input tensor [B, L, D].
-            mask : Optional attention mask.
+            x: Input [B, L, D].
 
         Returns:
-            output  : Unified tensor [B, L, D].
-            metrics : Diagnostic dict.
+            output:  Unified tensor [B, L, D].
+            metrics: Diagnostic dict.
         """
         metrics: Dict = {}
 
-        # ── Initialise per-stream hidden states (diversified projections) ───
-        stream_hiddens: List[Tensor] = [
+        # Diversify input into N streams
+        stream_ins = [
             norm(proj(x))
-            for proj, norm in zip(self.stream_in_proj, self.stream_in_norms)
+            for proj, norm in zip(self.stream_in, self.stream_in_norms)
         ]
 
-        # Global summary history (all streams × all block levels)
-        global_summary_history: List[Tensor] = []
+        # Intra-stream: each stream runs through its own Block AttnRes stack
+        intra_outs = []
+        for i, (si, stack) in enumerate(zip(stream_ins, self.intra_stream)):
+            out, m = stack.forward(si)
+            intra_outs.append(out)
+            metrics[f'stream_{i}'] = m
 
-        # ── Main loop: block levels ──────────────────────────────────────────
-        for b in range(self.n_blocks):
-            block_summaries: List[Tensor] = []
-            block_hiddens: List[Tensor] = []
-            level_metrics: Dict = {}
+        # Inter-stream: apply Block AttnRes across streams
+        updated, inter_m = self.inter_stream.forward(intra_outs)
+        metrics['inter_stream'] = inter_m
 
-            # PRINCIPLE 1 — Think in parallel
-            for s in range(self.n_streams):
-                h, summary, blk_m = self.streams[s][b].forward(
-                    stream_hiddens[s], mask
-                )
-                # PRINCIPLE 3 — Compound insight: enrich summary with history
-                summary = self.accumulator.forward(summary, global_summary_history)
-
-                block_hiddens.append(h)
-                block_summaries.append(summary)
-                global_summary_history.append(summary)
-                level_metrics[f's{s}_alpha'] = blk_m.get('block_alpha_mean', 0.0)
-
-            # PRINCIPLE 2 — Integrate with cohesion
-            stream_hiddens = self.cohesion_layers[b].forward(
-                block_hiddens, block_summaries
-            )
-
-            metrics[f'block_{b}'] = level_metrics
-
-        # ── Output: merge streams ────────────────────────────────────────────
-        merged = Tensor.cat(stream_hiddens, dim=-1)   # [B, L, D * n_streams]
+        # Merge streams
+        merged = Tensor.cat(updated, dim=-1)          # [B, L, D * n_streams]
         output = self.output_norm(self.output_proj(merged))
 
         metrics['n_streams'] = self.n_streams
-        metrics['n_blocks'] = self.n_blocks
-        metrics['block_size'] = self.block_size
-        metrics['total_layers'] = self.n_streams * self.n_blocks * self.block_size
-        metrics['summary_history_len'] = len(global_summary_history)
-
         return output, metrics
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Convenience constructor
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_parallel_compound(
     d_model: int = 512,
     n_heads: int = 8,
     n_streams: int = 4,
-    n_blocks: int = 3,
-    block_size: int = 4,
+    n_layers: int = 12,
+    block_size: int = 8,
     **torus_kwargs,
 ) -> ParallelCompoundAttention:
     """
     Build a ParallelCompoundAttention from flat hyperparameters.
 
-    Equivalent effective depth = n_streams × n_blocks × block_size layers.
-    With n_streams=4, n_blocks=3, block_size=4 → 48 effective layers.
-
     Example::
 
-        pca = build_parallel_compound(d_model=512, n_streams=4)
+        pca = build_parallel_compound(d_model=512, n_streams=4, n_layers=24)
         out, metrics = pca.forward(tokens)  # tokens: [B, L, 512]
     """
-    config = TorusAttentionConfig(
-        d_model=d_model,
-        n_heads=n_heads,
-        **torus_kwargs,
-    )
-    return ParallelCompoundAttention(config, n_streams, n_blocks, block_size)
+    config = TorusAttentionConfig(d_model=d_model, n_heads=n_heads, **torus_kwargs)
+    return ParallelCompoundAttention(config, n_streams, n_layers, block_size)

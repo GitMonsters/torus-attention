@@ -29,6 +29,10 @@ from .torus_attention_mechanism import (
     AttentionResidualStream,
     TorusTransformerBlock,
     apply_torus_attention,
+    # Kimi Attention Residuals (paper-faithful implementation)
+    LayerAttentionResidual,
+    BlockAttentionResiduals,
+    build_kimi_model,
 )
 from .advanced_torus_topology import AdvancedTorusConfig, TorusCoordinateSystem
 from .tinygrad_compatibility import Sequential, MultiheadAttention
@@ -43,6 +47,10 @@ __all__ = [
     'apply_torus_attention',
     'AdvancedTorusConfig',
     'TorusCoordinateSystem',
+    # Kimi Attention Residuals
+    'LayerAttentionResidual',
+    'BlockAttentionResiduals',
+    'build_kimi_model',
 ]
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

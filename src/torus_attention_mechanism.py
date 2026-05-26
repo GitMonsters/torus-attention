@@ -27,6 +27,7 @@ from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass
 
 from .advanced_torus_topology import AdvancedTorusConfig, TorusCoordinateSystem
+from .laderman_matmul import laderman_matmul_batch
 
 
 @dataclass
@@ -40,6 +41,7 @@ class TorusAttentionConfig:
     circulation_rate: float = 0.7
     memory_retention: float = 0.9
     gradient_flow_factor: float = 1.2
+    use_laderman: bool = True  # Use Laderman 23-mul algorithm for 3×3 head matmuls
 
 
 class TorusPositionalEncoding(object):
@@ -176,8 +178,11 @@ class VortexAttentionHead(object):
         k = self.k_proj(key) 
         v = self.v_proj(value)
         
-        # Compute attention scores
-        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        # Compute attention scores — use Laderman when d_head == 3 and enabled
+        if self.config.use_laderman and self.d_head == 3:
+            attention_scores = laderman_matmul_batch(q, k.transpose(-2, -1)) / self.scale
+        else:
+            attention_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
         
         # Apply mask if provided
         if mask is not None:
@@ -189,8 +194,11 @@ class VortexAttentionHead(object):
         # Apply vortex dynamics
         vortex_attention, vortex_values = self.apply_vortex_dynamics(attention_weights, v)
         
-        # Apply vortex attention to vortex values
-        output = torch.matmul(vortex_attention, vortex_values)
+        # Apply vortex attention to vortex values — use Laderman when d_head == 3
+        if self.config.use_laderman and self.d_head == 3:
+            output = laderman_matmul_batch(vortex_attention, vortex_values)
+        else:
+            output = torch.matmul(vortex_attention, vortex_values)
         
         # Apply memory retention
         output = self.apply_memory_retention(output, prev_memory)
